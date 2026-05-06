@@ -1,4 +1,4 @@
-"""CLI entry point for Stokowski."""
+"""CLI entry point for Concerto."""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ def setup_logging(verbose: bool = False):
 # ── Update check ───────────────────────────────────────────────────────────
 
 async def check_for_updates():
-    """Check if a newer Stokowski release is available on GitHub."""
+    """Check if a newer Concerto release is available on GitHub."""
     global _update_message
     from . import __version__
 
@@ -71,7 +71,7 @@ async def check_for_updates():
         import httpx
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(
-                "https://api.github.com/repos/Sugar-Coffee/stokowski/releases/latest",
+                "https://api.github.com/repos/omri-alon/concerto/releases/latest",
                 headers={"Accept": "application/vnd.github+json"},
             )
             if resp.status_code != 200:
@@ -81,7 +81,7 @@ async def check_for_updates():
                 return
             if _parse_ver(latest_tag) > _parse_ver(__version__):
                 _update_message = (
-                    f"Stokowski {latest_tag} available (you have {__version__})"
+                    f"Concerto {latest_tag} available (you have {__version__})"
                 )
     except Exception:
         pass  # Update checks are best-effort
@@ -90,13 +90,13 @@ async def check_for_updates():
 # ── Keyboard handler ────────────────────────────────────────────────────────
 
 HELP_TEXT = """
-[bold white]Stokowski keyboard shortcuts[/bold white]
+[bold white]Concerto keyboard shortcuts[/bold white]
 
   [bold yellow]q[/bold yellow]   Quit — graceful shutdown, kills all agents
   [bold yellow]s[/bold yellow]   Status — show running agents and token usage
   [bold yellow]p[/bold yellow]   Pause/resume a project (toggle dispatch for one project)
   [bold yellow]h[/bold yellow]   Help — show this message
-  [bold yellow]r[/bold yellow]   Refresh — force an immediate Linear poll
+  [bold yellow]r[/bold yellow]   Refresh — force an immediate GUS poll
 """
 
 
@@ -166,7 +166,7 @@ def print_status(orch: MultiOrchestrator):
     ))
     console.print(Panel(
         table,
-        title=f"[bold]Stokowski Status[/bold]  "
+        title=f"[bold]Concerto Status[/bold]  "
               f"[dim]running={running}  retrying={retrying}  "
               f"queued={queued}  "
               f"tokens={total_tok:,}  uptime={secs:.0f}s[/dim]",
@@ -302,8 +302,10 @@ def _make_footer(orch: MultiOrchestrator) -> Text:
     )
 
 
-async def run_orchestrator(workflow_path: str, port: int | None = None):
-    orch = MultiOrchestrator(workflow_path)
+async def run_orchestrator(
+    workflow_path: str, port: int | None = None, only: set[str] | None = None
+):
+    orch = MultiOrchestrator(workflow_path, only=only)
     loop = asyncio.get_running_loop()
 
     # Start keyboard handler
@@ -328,14 +330,18 @@ async def run_orchestrator(workflow_path: str, port: int | None = None):
             console.print(f"[green]Web dashboard →[/green] http://127.0.0.1:{port}")
         except ImportError:
             console.print(
-                "[yellow]Install web extras for dashboard: pip install stokowski[web][/yellow]"
+                "[yellow]Install web extras for dashboard: pip install concerto[web][/yellow]"
             )
 
     await check_for_updates()
 
+    only_line = (
+        f"\n[dim]only:[/dim] {', '.join(sorted(only))}" if only else ""
+    )
     console.print(Panel(
-        f"[bold]Stokowski[/bold]  [dim]Claude Code Orchestrator[/dim]\n"
-        f"[dim]workflow:[/dim] {workflow_path}",
+        f"[bold]Concerto[/bold]  [dim]Claude Code Orchestrator[/dim]\n"
+        f"[dim]workflow:[/dim] {workflow_path}"
+        f"{only_line}",
         border_style="dim",
     ))
 
@@ -371,7 +377,7 @@ async def run_orchestrator(workflow_path: str, port: int | None = None):
 
 def cli():
     parser = argparse.ArgumentParser(
-        description="Stokowski - Orchestrate Claude Code agents from Linear issues"
+        description="Concerto - Orchestrate Claude Code agents from GUS work items"
     )
     parser.add_argument(
         "workflow",
@@ -391,6 +397,14 @@ def cli():
         "--dry-run", action="store_true",
         help="Validate config and show candidates without dispatching",
     )
+    parser.add_argument(
+        "--only", action="append", default=None, metavar="IDENT",
+        help=(
+            "Restrict orchestration to one or more work-item identifiers "
+            "(e.g. --only W-12345678). May be repeated. All other tickets "
+            "are ignored for dispatch, gates, rework, and cleanup."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -404,18 +418,20 @@ def cli():
         else:
             console.print(
                 "[red]No workflow file found. Create workflow.yaml or WORKFLOW.md, "
-                "or specify a path: stokowski <path>[/red]"
+                "or specify a path: concerto <path>[/red]"
             )
             sys.exit(1)
 
     _load_dotenv()
     setup_logging(args.verbose)
 
+    only = set(args.only) if args.only else None
+
     if args.dry_run:
         asyncio.run(dry_run(args.workflow))
     else:
         try:
-            asyncio.run(run_orchestrator(args.workflow, args.port))
+            asyncio.run(run_orchestrator(args.workflow, args.port, only=only))
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted — killing all agents...[/yellow]")
             _force_kill_children()
@@ -470,7 +486,7 @@ async def dry_run(workflow_path: str):
     console.print(f"  Projects: {len(cfg.projects)}")
     console.print()
 
-    from .linear import LinearClient
+    from .gus import GusClient
 
     for project in cfg.projects:
         per_project_cap = (
@@ -480,7 +496,7 @@ async def dry_run(workflow_path: str):
         )
         cap_str = f", per-project cap: {per_project_cap}" if per_project_cap else ""
         console.print(f"[bold cyan]Project '{project.name}'[/bold cyan]")
-        console.print(f"  Tracker: {project.tracker.kind}  slug={project.tracker.project_slug}{cap_str}")
+        console.print(f"  Tracker: {project.tracker.kind}  target_org={project.tracker.target_org}  scrum_team={project.tracker.scrum_team}{cap_str}")
         console.print(f"  Claude model: {project.claude.model or 'default'}  permission={project.claude.permission_mode}")
         console.print(f"  Workspace root: {project.workspace.resolved_root()}")
         if project.paused:
@@ -490,21 +506,23 @@ async def dry_run(workflow_path: str):
             console.print(f"  [bold]State machine[/bold] ({len(project.states)} states):")
             console.print(f"    Entry state: {project.entry_state}")
             console.print(
-                f"    Linear states: active={project.linear_states.active}, "
-                f"review={project.linear_states.review}"
+                f"    GUS statuses: active={project.gus_statuses.active}, "
+                f"review={project.gus_statuses.review}"
             )
             for name, state in project.states.items():
                 transitions = ", ".join(f"{k}->{v}" for k, v in state.transitions.items())
                 console.print(f"    {name} ({state.type}) -> {transitions or 'terminal'}")
 
-        client = LinearClient(
-            endpoint=project.tracker.endpoint,
-            api_key=project.resolved_api_key(),
+        client = GusClient(
+            target_org=project.tracker.target_org,
+            scrum_team=project.tracker.scrum_team,
+            current_sprint_only=project.tracker.current_sprint_only,
+            assignee=project.tracker.assignee,
         )
         try:
             candidates = await client.fetch_candidate_issues(
-                project.tracker.project_slug,
-                project.active_linear_states(),
+                project.tracker.scrum_team,
+                project.active_gus_statuses(),
             )
         except Exception as e:
             console.print(f"  [red]Failed to fetch candidates: {e}[/red]")
@@ -515,17 +533,15 @@ async def dry_run(workflow_path: str):
         if candidates:
             table = Table()
             table.add_column("ID", style="cyan")
-            table.add_column("State", style="green")
+            table.add_column("Status", style="green")
             table.add_column("Priority")
             table.add_column("Title")
-            table.add_column("Labels", style="dim")
             for issue in candidates:
                 table.add_row(
                     issue.identifier,
                     issue.state,
                     str(issue.priority or "—"),
                     issue.title[:60],
-                    ", ".join(issue.labels) if issue.labels else "",
                 )
             console.print(table)
         await client.close()

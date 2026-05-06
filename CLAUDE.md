@@ -1,6 +1,6 @@
-# Stokowski
+# Concerto
 
-Claude Code adaptation of [OpenAI's Symphony](https://github.com/openai/symphony). Orchestrates Claude Code agents via Linear issues.
+Claude Code adaptation of [OpenAI's Symphony](https://github.com/openai/symphony). Orchestrates Claude Code agents via GUS work items.
 
 This file is the single source of truth for contributors. It covers architecture, design decisions, key behaviours, and how to work on the codebase.
 
@@ -8,13 +8,13 @@ This file is the single source of truth for contributors. It covers architecture
 
 ## What it does
 
-Stokowski is a long-running Python daemon that:
-1. Polls Linear for issues in configured active states
+Concerto is a long-running Python daemon that:
+1. Polls GUS for issues in configured active states
 2. Creates an isolated git-cloned workspace per issue
 3. Launches Claude Code (`claude -p`) in that workspace
 4. Manages multi-turn sessions via `--resume <session_id>`
 5. Retries failures with exponential backoff
-6. Reconciles running agents against Linear state changes
+6. Reconciles running agents against GUS status changes
 7. Exposes a live web dashboard and terminal UI
 
 The agent prompt, runtime config, and workspace setup all live in `workflow.yaml` in the operator's directory — not in this codebase.
@@ -24,18 +24,18 @@ The agent prompt, runtime config, and workspace setup all live in `workflow.yaml
 ## Package structure
 
 ```
-stokowski/
+concerto/
   config.py        workflow.yaml parser + typed config dataclasses
-  linear.py        Linear GraphQL client (httpx async)
+  gus.py        GUS client via the `sf` CLI
   models.py        Domain models: Issue, RunAttempt, RetryEntry
   orchestrator.py  Main poll loop, dispatch, reconciliation, retry
   prompt.py        Three-layer prompt assembly for state machine workflows
   runner.py        Claude Code CLI integration, stream-json parser
-  tracking.py      State machine tracking via structured Linear comments
+  tracking.py      State machine tracking via structured GUS comments
   workspace.py     Per-issue workspace lifecycle and hooks
   web.py           Optional FastAPI dashboard
   main.py          CLI entry point, keyboard handler
-  __main__.py      Enables python -m stokowski
+  __main__.py      Enables python -m concerto
 ```
 
 ---
@@ -43,7 +43,7 @@ stokowski/
 ## Key design decisions
 
 ### Claude Code CLI instead of Codex app-server
-Symphony uses Codex's JSON-RPC `app-server` protocol over stdio. Stokowski uses Claude Code's CLI:
+Symphony uses Codex's JSON-RPC `app-server` protocol over stdio. Concerto uses Claude Code's CLI:
 - First turn: `claude -p "<prompt>" --output-format stream-json --verbose`
 - Continuation: `claude -p "<prompt>" --resume <session_id> --output-format stream-json --verbose`
 
@@ -53,22 +53,22 @@ Symphony uses Codex's JSON-RPC `app-server` protocol over stdio. Stokowski uses 
 Simpler operational story — single process, no BEAM runtime, no distributed concerns. Concurrency via `asyncio.create_task`. Each agent turn is a subprocess launched with `asyncio.create_subprocess_exec`.
 
 ### No persistent database
-All state lives in memory. The orchestrator recovers from restart by re-polling Linear and re-discovering active issues. Workspace directories on disk act as durable state.
+All state lives in memory. The orchestrator recovers from restart by re-polling GUS and re-discovering active issues. Workspace directories on disk act as durable state.
 
 ### workflow.yaml as the operator contract
-The operator's `workflow.yaml` defines the runtime config and state machine. Stokowski re-parses it on every poll tick — config changes take effect without restart. Both `.yaml` and legacy `.md` (YAML front matter + Jinja2 body) formats are supported. Prompt templates are now separate `.md` files referenced by path from the config.
+The operator's `workflow.yaml` defines the runtime config and state machine. Concerto re-parses it on every poll tick — config changes take effect without restart. Both `.yaml` and legacy `.md` (YAML front matter + Jinja2 body) formats are supported. Prompt templates are now separate `.md` files referenced by path from the config.
 
 ### State machine workflow
-Each workflow defines a set of internal states that map to Linear states. States have types: `agent` (runs Claude Code), `gate` (waits for human review), or `terminal` (issue complete). Transitions between states are declared explicitly in config.
+Each workflow defines a set of internal states that map to GUS statuses. States have types: `agent` (runs Claude Code), `gate` (waits for human review), or `terminal` (issue complete). Transitions between states are declared explicitly in config.
 
 **Three-layer prompt assembly:** Every agent turn's prompt is built from three layers concatenated together:
 1. **Global prompt** — shared context loaded from a `.md` file (referenced by `prompts.global_prompt`)
 2. **Stage prompt** — state-specific instructions loaded from the state's `prompt` path
 3. **Lifecycle injection** — auto-generated section with issue metadata, transitions, rework context, and recent comments
 
-**Gate protocol:** When an agent completes a state that transitions to a gate, Stokowski moves the issue to the gate's Linear state and posts a structured tracking comment. Humans approve or request rework via Linear state changes. On approval, Stokowski advances to the gate's `approve` transition target. On rework, it returns to the gate's `rework_to` state.
+**Gate protocol:** When an agent completes a state that transitions to a gate, Concerto moves the issue to the gate's GUS status and posts a structured tracking comment. Humans approve or request rework via GUS state changes. On approval, Concerto advances to the gate's `approve` transition target. On rework, it returns to the gate's `rework_to` state.
 
-**Structured comment tracking:** State transitions and gate decisions are persisted as HTML comments on Linear issues (`<!-- stokowski:state {...} -->` and `<!-- stokowski:gate {...} -->`). These enable crash recovery and provide context for rework runs.
+**Structured comment tracking:** State transitions and gate decisions are persisted as HTML comments on GUS work items (`<!-- concerto:state {...} -->` and `<!-- concerto:gate {...} -->`). These enable crash recovery and provide context for rework runs.
 
 ### Workspace isolation
 Each issue gets its own directory under `workspace.root`. Agents run with `cwd` set to that directory. Workspaces persist across turns for the same session; they're deleted when the issue reaches a terminal state.
@@ -82,18 +82,18 @@ Every first-turn launch appends a system prompt via `--append-system-prompt` tha
 
 ### config.py
 Parses `workflow.yaml` (or legacy `.md` with front matter) into typed dataclasses:
-- `TrackerConfig` — Linear endpoint, API key, project slug
+- `TrackerConfig` — target_org, scrum_team
 - `PollingConfig` — interval
 - `WorkspaceConfig` — root path (supports `~` and `$VAR` expansion)
 - `HooksConfig` — shell scripts for lifecycle events + timeout (includes `on_stage_enter`)
 - `ClaudeConfig` — command, permission mode, model, timeouts, system prompt
 - `AgentConfig` — concurrency limits (global + per-state)
 - `ServerConfig` — optional web dashboard port
-- `LinearStatesConfig` — maps logical state names (`todo`, `active`, `review`, `gate_approved`, `rework`, `terminal`) to actual Linear state names. Issues in the `todo` state are picked up and automatically moved to `active` on dispatch.
+- `GusStatusesConfig` — maps logical state names (`todo`, `active`, `review`, `gate_approved`, `rework`, `terminal`) to actual GUS status names. Issues in the `todo` state are picked up and automatically moved to `active` on dispatch.
 - `PromptsConfig` — global prompt file reference
-- `StateConfig` — a single state in the state machine: type, prompt path, linear_state key, runner, session mode, transitions, per-state overrides (model, max_turns, timeouts, hooks), gate-specific fields (rework_to, max_rework)
+- `StateConfig` — a single state in the state machine: type, prompt path, gus_status key, runner, session mode, transitions, per-state overrides (model, max_turns, timeouts, hooks), gate-specific fields (rework_to, max_rework)
 
-`ServiceConfig` provides helper methods: `entry_state` (first agent state), `active_linear_states()`, `gate_linear_states()`, `terminal_linear_states()`.
+`ServiceConfig` provides helper methods: `entry_state` (first agent state), `active_gus_statuses()`, `gate_gus_statuses()`, `terminal_gus_statuses()`.
 
 `merge_state_config(state, root_claude, root_hooks)` merges per-state overrides with root defaults — only specified fields are overridden. Returns `(ClaudeConfig, HooksConfig)`.
 
@@ -104,19 +104,19 @@ Parses `workflow.yaml` (or legacy `.md` with front matter) into typed dataclasse
 `ServiceConfig.resolved_api_key()` resolves the key in priority order:
 1. Literal value in YAML
 2. `$VAR` reference resolved from env
-3. `LINEAR_API_KEY` env var as fallback
+3. `GUS_TARGET_ORG` env var as fallback
 
-### linear.py
+### gus.py
 Async GraphQL client over httpx. Three queries:
 - `fetch_candidate_issues()` — paginated, fetches all issues in active states with full detail (labels, blockers, branch name)
 - `fetch_issue_states_by_ids()` — lightweight reconciliation query, returns `{id: state_name}`
 - `fetch_issues_by_states()` — used on startup cleanup, returns minimal Issue objects
 
-Note: the reconciliation query uses `issues(filter: { id: { in: $ids } })` — not `nodes(ids:)` which doesn't exist in Linear's API.
+Note: the reconciliation query uses `issues(filter: { id: { in: $ids } })` — not `nodes(ids:)` which doesn't exist in GUS's API.
 
 ### models.py
 Three dataclasses:
-- `Issue` — normalized Linear issue. `title` is required even for minimal fetches (use `title=""`).
+- `Issue` — normalized GUS work item. `title` is required even for minimal fetches (use `title=""`).
 - `RunAttempt` — per-issue runtime state: session_id, turn count, token usage, status, last message
 - `RetryEntry` — retry queue entry with due time and error
 
@@ -183,7 +183,7 @@ CLI entry point (`cli()`) and keyboard handler.
 
 **`_make_footer()`** builds the Rich `Text` status line shown at bottom of terminal via `Live`.
 
-**`check_for_updates()`** hits the GitHub releases API (`/repos/Sugar-Coffee/stokowski/releases/latest`) via httpx, compares the latest tag against the installed `__version__`, and sets `_update_message` if a newer version exists. Best-effort — all exceptions are silently swallowed.
+**`check_for_updates()`** hits the GitHub releases API (`/repos/omri-alon/concerto/releases/latest`) via httpx, compares the latest tag against the installed `__version__`, and sets `_update_message` if a newer version exists. Best-effort — all exceptions are silently swallowed.
 
 **`_force_kill_children()`** uses `pgrep -f "claude.*-p.*--output-format.*stream-json"` as a last-resort cleanup on `KeyboardInterrupt`.
 
@@ -203,8 +203,8 @@ Three-layer prompt assembly for state machine workflows. Main entry point is `as
 **`assemble_prompt()`** orchestrates the three layers: loads and renders global prompt, loads and renders stage prompt, generates lifecycle section, joins with double newlines.
 
 ### tracking.py
-State machine tracking via structured Linear comments:
-- `make_state_comment(state, run)` — builds state entry comment with hidden JSON (`<!-- stokowski:state {...} -->`) + human-readable text
+State machine tracking via structured GUS comments:
+- `make_state_comment(state, run)` — builds state entry comment with hidden JSON (`<!-- concerto:state {...} -->`) + human-readable text
 - `make_gate_comment(state, status, prompt, rework_to, run)` — builds gate status comment (waiting/approved/rework/escalated)
 - `parse_latest_tracking(comments)` — scans comments (oldest-first) to find latest state or gate tracking entry for crash recovery
 - `get_last_tracking_timestamp(comments)` — finds the timestamp of the latest tracking comment
@@ -216,7 +216,7 @@ State machine tracking via structured Linear comments:
 
 ```
 workflow.yaml parsed → states + config loaded
-    → Linear poll → Issue fetched → state resolved from tracking comments
+    → GUS poll → Issue fetched → state resolved from tracking comments
     → _dispatch() called
         → RunAttempt created in self.running
         → _run_worker() task spawned
@@ -232,7 +232,7 @@ workflow.yaml parsed → states + config loaded
                 → retry or continuation scheduled
 ```
 
-The agent itself handles: moving Linear state, posting comments, creating branches, opening PRs via `gh pr create`, linking PR to issue. Stokowski doesn't do any of that — it's the scheduler, not the agent.
+The agent itself handles: moving GUS status, posting comments, creating branches, opening PRs via `gh pr create`, linking PR to issue. Concerto doesn't do any of that — it's the scheduler, not the agent.
 
 ---
 
@@ -257,23 +257,23 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[web]"
 
 # Validate config without dispatching agents
-stokowski --dry-run
+concerto --dry-run
 
 # Run with verbose logging
-stokowski -v
+concerto -v
 
 # Run with web dashboard
-stokowski --port 4200
+concerto --port 4200
 ```
 
-There are no automated tests beyond `--dry-run`. The system is best verified by running against a real Linear project with a test ticket.
+There are no automated tests beyond `--dry-run`. The system is best verified by running against a real GUS scrum team with a test ticket.
 
 ---
 
 ## Contributing
 
-### Adding a new tracker (not Linear)
-1. Add a client in a new file (e.g., `github_issues.py`) implementing the same three methods as `LinearClient`
+### Adding a new tracker (not GUS)
+1. Add a client in a new file (e.g., `github_issues.py`) implementing the same three methods as `GusClient`
 2. Add the new tracker kind to `config.py` parsing
 3. Update `orchestrator.py` to instantiate the right client based on `cfg.tracker.kind`
 4. Update `validate_config()` to handle the new kind
@@ -289,9 +289,9 @@ There are no automated tests beyond `--dry-run`. The system is best verified by 
 
 ### Common pitfalls
 - **`tty.setraw` vs `tty.setcbreak`**: Don't switch back to `setraw`. It disables `OPOST` output processing and causes Rich log lines to render diagonally (no carriage return on newlines).
-- **`Issue(title=...)` is required**: Minimal Issue constructors (in `linear.py` `fetch_issues_by_states` and the `orchestrator.py` state-check default) must pass `title=""` — it's a required positional field.
+- **`Issue(title=...)` is required**: Minimal Issue constructors (in `gus.py` `fetch_issues_by_states` and the `orchestrator.py` state-check default) must pass `title=""` — it's a required positional field.
 - **`--verbose` with stream-json**: Claude Code requires `--verbose` when using `--output-format stream-json`. Without it you get an error.
-- **Linear project slug**: The `project_slug` is the hex `slugId` from the project URL, not the human-readable name. These look like `abc123def456`.
+- **GUS scrum team slug**: The `scrum_team` is the hex `slugId` from the project URL, not the human-readable name. These look like `abc123def456`.
 - **Uvicorn signal handlers**: Must be monkey-patched (`server.install_signal_handlers = lambda: None`) before calling `serve()`, otherwise uvicorn hijacks SIGINT.
 - **workflow.yaml is pure YAML**: No markdown front matter. The legacy `.md` format with `---` delimiters is still supported but `.yaml` is the canonical format.
 - **Prompt files use Jinja2 with silent undefined**: Missing variables become empty strings rather than raising errors. This is intentional — not all variables are available in every context.

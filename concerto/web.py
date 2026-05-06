@@ -12,580 +12,678 @@ try:
     from fastapi import FastAPI
     from fastapi.responses import HTMLResponse, JSONResponse
 except ImportError:
-    raise ImportError("Install web extras: pip install stokowski[web]")
+    raise ImportError("Install web extras: pip install concerto[web]")
 
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Stokowski</title>
+<title>Concerto — Program of Works</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,700;0,9..144,900;1,9..144,300;1,9..144,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --bg:        #080808;
-    --surface:   #0f0f0f;
-    --border:    #1c1c1c;
-    --border-hi: #2a2a2a;
-    --text:      #e8e8e0;
-    --muted:     #555550;
-    --dim:       #333330;
-    --amber:     #e8b84b;
-    --amber-dim: #6b5220;
-    --green:     #4cba6e;
-    --red:       #d95f52;
-    --blue:      #5b9cf6;
-    --font:      'IBM Plex Mono', monospace;
+    --paper:     #f4ede0;
+    --paper-2:   #ece4d2;
+    --rule:      #1715111a;
+    --rule-hi:   #17151140;
+    --ink:       #171511;
+    --ink-soft:  #3a342b;
+    --muted:     #6f6657;
+    --dim:       #a59d8a;
+    --vermilion: #c8412b;
+    --vermilion-soft: #c8412b22;
+    --ledger:    #3d6b4a;
+    --ledger-soft: #3d6b4a22;
+    --slate:     #355a8a;
+    --slate-soft: #355a8a22;
+    --gold:      #a37a1f;
+    --gold-soft: #a37a1f22;
+
+    --serif:  'Fraunces', 'Times New Roman', serif;
+    --mono:   'JetBrains Mono', ui-monospace, monospace;
+    --ease:   cubic-bezier(.6,.05,.2,1);
   }
 
   html, body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--font);
-    font-size: 13px;
-    line-height: 1.5;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.55;
     min-height: 100vh;
     -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
   }
 
-  /* Subtle grid background */
-  body::before {
+  /* Paper grain — subtle SVG noise */
+  body::after {
     content: '';
     position: fixed;
     inset: 0;
-    background-image:
-      linear-gradient(var(--border) 1px, transparent 1px),
-      linear-gradient(90deg, var(--border) 1px, transparent 1px);
-    background-size: 40px 40px;
-    opacity: 0.35;
     pointer-events: none;
-    z-index: 0;
+    z-index: 2;
+    opacity: 0.35;
+    mix-blend-mode: multiply;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.09  0 0 0 0 0.08  0 0 0 0 0.06  0 0 0 0.18 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    background-size: 220px 220px;
   }
+
+  ::selection { background: var(--ink); color: var(--paper); }
 
   .shell {
     position: relative;
     z-index: 1;
-    max-width: 1280px;
+    max-width: 1240px;
     margin: 0 auto;
-    padding: 0 24px 60px;
+    padding: 0 36px 80px;
   }
 
   /* ── Header ── */
   header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 28px 0 24px;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 32px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: end;
+    padding: 56px 0 28px;
+    border-bottom: 0.5px solid var(--rule-hi);
+    margin-bottom: 36px;
+    position: relative;
+  }
+  header::before {
+    content: '';
+    position: absolute;
+    left: 0; right: 0; bottom: -3px;
+    height: 0.5px;
+    background: var(--rule-hi);
   }
 
-  .logo {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-  }
+  .logo { display: flex; flex-direction: column; gap: 2px; }
 
   .logo-name {
-    font-size: 22px;
-    font-weight: 600;
-    letter-spacing: -0.5px;
-    color: var(--text);
+    font-family: var(--serif);
+    font-variation-settings: "opsz" 144, "wght" 700;
+    font-size: clamp(64px, 9vw, 112px);
+    line-height: 0.86;
+    letter-spacing: -0.045em;
+    color: var(--ink);
+  }
+  .logo-name em {
+    font-style: italic;
+    font-variation-settings: "opsz" 144, "wght" 500;
+    color: var(--vermilion);
   }
 
   .logo-tag {
-    font-size: 11px;
-    font-weight: 300;
+    font-family: var(--serif);
+    font-style: italic;
+    font-variation-settings: "opsz" 14, "wght" 400;
+    font-size: 14px;
     color: var(--muted);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    letter-spacing: 0.01em;
+    margin-top: 10px;
   }
 
   .header-right {
+    text-align: right;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-items: flex-end;
+    padding-bottom: 6px;
+  }
+
+  .opus-mark {
+    font-family: var(--serif);
+    font-style: italic;
+    font-variation-settings: "opsz" 14, "wght" 400;
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+  }
+  .opus-mark b {
+    font-style: normal;
+    font-variation-settings: "opsz" 14, "wght" 700;
+    color: var(--ink);
+  }
+
+  .conductor-row {
     display: flex;
     align-items: center;
-    gap: 24px;
+    gap: 10px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
   }
 
   .status-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--green);
-    box-shadow: 0 0 8px var(--green);
-    animation: pulse-green 2.5s ease-in-out infinite;
+    width: 8px; height: 8px;
+    background: var(--vermilion);
+    transform: rotate(45deg);
+    transition: opacity .4s var(--ease), background .3s var(--ease);
   }
-
-  .status-dot.idle {
-    background: var(--muted);
-    box-shadow: none;
-    animation: none;
-  }
-
-  @keyframes pulse-green {
-    0%, 100% { opacity: 1; box-shadow: 0 0 6px var(--green); }
-    50%       { opacity: 0.5; box-shadow: 0 0 12px var(--green); }
-  }
+  .status-dot.idle { background: var(--dim); opacity: .5; }
 
   .timestamp {
+    font-family: var(--mono);
     font-size: 11px;
-    color: var(--muted);
-    font-weight: 300;
-    letter-spacing: 0.04em;
+    color: var(--ink-soft);
+    letter-spacing: 0.06em;
   }
 
-  /* ── Metrics row ── */
+  /* ── Metrics row (typographic, no cards) ── */
   .metrics {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: 1px;
-    background: var(--border);
-    border: 1px solid var(--border);
-    margin-bottom: 32px;
+    border-top: 0.5px solid var(--rule-hi);
+    border-bottom: 0.5px solid var(--rule-hi);
+    margin-bottom: 44px;
+    background:
+      linear-gradient(var(--rule-hi), var(--rule-hi)) left  / 0.5px 100% no-repeat,
+      linear-gradient(var(--rule-hi), var(--rule-hi)) 25%  0 / 0.5px 100% no-repeat,
+      linear-gradient(var(--rule-hi), var(--rule-hi)) 50%  0 / 0.5px 100% no-repeat,
+      linear-gradient(var(--rule-hi), var(--rule-hi)) 75%  0 / 0.5px 100% no-repeat,
+      linear-gradient(var(--rule-hi), var(--rule-hi)) right 0 / 0.5px 100% no-repeat;
   }
 
   .metric {
-    background: var(--surface);
-    padding: 20px 24px;
+    padding: 26px 28px 24px;
     position: relative;
-    overflow: hidden;
+    transition: background .4s var(--ease);
   }
-
-  .metric::after {
-    content: '';
-    position: absolute;
-    bottom: 0; left: 0; right: 0;
-    height: 2px;
-    background: var(--border-hi);
-    transition: background 0.3s;
-  }
-
-  .metric.active::after {
-    background: var(--amber);
-  }
+  .metric.active { background: linear-gradient(180deg, var(--vermilion-soft), transparent 70%); }
 
   .metric-label {
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
+    font-family: var(--serif);
+    font-style: italic;
+    font-variation-settings: "opsz" 14, "wght" 400;
+    font-size: 12px;
+    letter-spacing: 0.04em;
     color: var(--muted);
-    margin-bottom: 8px;
+    margin-bottom: 14px;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .metric-label::before {
+    content: '';
+    width: 14px;
+    height: 0.5px;
+    background: var(--ink);
+    transform: translateY(-3px);
   }
 
   .metric-value {
-    font-size: 32px;
-    font-weight: 600;
-    color: var(--text);
-    line-height: 1;
-    letter-spacing: -1px;
-    transition: color 0.3s;
+    font-family: var(--serif);
+    font-variation-settings: "opsz" 144, "wght" 500;
+    font-size: 64px;
+    line-height: 0.92;
+    letter-spacing: -0.04em;
+    color: var(--ink);
+    transition: color .4s var(--ease), font-variation-settings .8s var(--ease);
+    font-feature-settings: "lnum", "tnum";
   }
-
   .metric.active .metric-value {
-    color: var(--amber);
+    color: var(--vermilion);
+    font-variation-settings: "opsz" 144, "wght" 700;
   }
 
   .metric-sub {
-    font-size: 11px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
     color: var(--muted);
-    margin-top: 6px;
-    font-weight: 300;
+    margin-top: 12px;
   }
 
   /* ── Section headers ── */
   .section-header {
     display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 12px;
+    align-items: baseline;
+    gap: 14px;
+    margin-bottom: 14px;
+    padding-top: 4px;
+  }
+
+  .section-numeral {
+    font-family: var(--serif);
+    font-style: italic;
+    font-variation-settings: "opsz" 144, "wght" 500;
+    font-size: 28px;
+    color: var(--vermilion);
+    letter-spacing: -0.02em;
+    line-height: 1;
   }
 
   .section-title {
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.14em;
+    font-family: var(--serif);
+    font-variation-settings: "opsz" 14, "wght" 500;
+    font-size: 13px;
+    letter-spacing: 0.22em;
     text-transform: uppercase;
-    color: var(--muted);
+    color: var(--ink);
   }
 
   .section-line {
     flex: 1;
-    height: 1px;
-    background: var(--border);
+    height: 0.5px;
+    background: var(--rule-hi);
+    transform: translateY(-4px);
   }
 
   .section-count {
+    font-family: var(--mono);
     font-size: 10px;
-    color: var(--dim);
-    font-weight: 300;
+    color: var(--muted);
+    letter-spacing: 0.12em;
   }
 
-  /* ── Agent cards ── */
+  /* ── Agent ledger rows ── */
   .agents {
     display: flex;
     flex-direction: column;
-    gap: 1px;
-    background: var(--border);
-    border: 1px solid var(--border);
-    margin-bottom: 32px;
+    border-top: 0.5px solid var(--rule-hi);
+    border-bottom: 0.5px solid var(--rule-hi);
+    margin-bottom: 44px;
   }
 
   .agent-card {
-    background: var(--surface);
-    padding: 18px 24px;
+    padding: 20px 4px;
     display: grid;
-    grid-template-columns: 100px 1fr auto;
-    gap: 16px;
-    align-items: start;
-    transition: background 0.15s;
+    grid-template-columns: 130px 1fr auto;
+    gap: 24px;
+    align-items: center;
+    border-bottom: 0.5px solid var(--rule);
+    transition: background .25s var(--ease);
+    position: relative;
+    overflow: hidden;
   }
+  .agent-card:last-child { border-bottom: none; }
+  .agent-card:hover { background: var(--paper-2); }
 
-  .agent-card:hover {
-    background: #141414;
+  /* Streaming baton sweep */
+  .agent-card:has(.status-pill.streaming)::after {
+    content: '';
+    position: absolute;
+    left: -10%;
+    bottom: 0;
+    width: 22%;
+    height: 1.5px;
+    background: var(--vermilion);
+    animation: baton 4.2s var(--ease) infinite;
+  }
+  @keyframes baton {
+    0%   { left: -22%; opacity: 0; }
+    15%  { opacity: 1; }
+    85%  { opacity: 1; }
+    100% { left: 102%; opacity: 0; }
   }
 
   .agent-id {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--amber);
-    letter-spacing: 0.02em;
+    font-family: var(--serif);
+    font-variation-settings: "opsz" 14, "wght" 500;
+    font-size: 16px;
+    color: var(--ink);
+    letter-spacing: 0.01em;
+    font-feature-settings: "lnum", "tnum";
   }
 
   .agent-status-row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 14px;
     margin-bottom: 6px;
   }
 
   .status-pill {
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.1em;
+    font-family: var(--mono);
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.22em;
     text-transform: uppercase;
-    padding: 2px 8px;
-    border-radius: 2px;
+    padding: 2px 0 2px 10px;
+    border-left: 2px solid var(--dim);
+    color: var(--muted);
+    background: transparent;
   }
-
-  .status-pill.streaming {
-    background: rgba(232, 184, 75, 0.12);
-    color: var(--amber);
-    border: 1px solid var(--amber-dim);
-  }
-
+  .status-pill.streaming  { color: var(--vermilion); border-left-color: var(--vermilion); }
   .status-pill.streaming::before {
-    content: '▶ ';
-    animation: blink 1.2s step-end infinite;
+    content: '◆ ';
+    animation: pulse-dia 1.4s var(--ease) infinite;
   }
-
-  @keyframes blink {
+  @keyframes pulse-dia {
     0%, 100% { opacity: 1; }
-    50%       { opacity: 0; }
+    50% { opacity: 0.25; }
   }
-
-  .status-pill.succeeded  { background: rgba(76,186,110,.1); color: var(--green); border: 1px solid rgba(76,186,110,.25); }
-  .status-pill.failed     { background: rgba(217,95,82,.1);  color: var(--red);   border: 1px solid rgba(217,95,82,.25); }
-  .status-pill.retrying   { background: rgba(91,156,246,.1); color: var(--blue);  border: 1px solid rgba(91,156,246,.25); }
-  .status-pill.pending    { background: transparent;          color: var(--muted); border: 1px solid var(--border-hi); }
-  .status-pill.gate { background: rgba(232, 184, 75, 0.08); color: var(--amber-dim); border: 1px solid var(--amber-dim); }
+  .status-pill.succeeded  { color: var(--ledger);    border-left-color: var(--ledger); }
+  .status-pill.failed     { color: var(--vermilion); border-left-color: var(--vermilion); }
+  .status-pill.retrying   { color: var(--slate);     border-left-color: var(--slate); }
+  .status-pill.pending    { color: var(--muted);     border-left-color: var(--dim); }
+  .status-pill.gate       { color: var(--gold);      border-left-color: var(--gold); }
 
   .agent-msg {
-    font-size: 12px;
-    color: var(--muted);
-    font-weight: 300;
+    font-family: var(--serif);
+    font-style: italic;
+    font-variation-settings: "opsz" 14, "wght" 400;
+    font-size: 13.5px;
+    color: var(--ink-soft);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 620px;
+    max-width: 640px;
   }
 
   .agent-meta {
     text-align: right;
     white-space: nowrap;
+    font-family: var(--mono);
   }
-
   .agent-tokens {
-    font-size: 12px;
-    color: var(--text);
-    font-weight: 500;
+    font-size: 13px;
+    color: var(--ink);
+    font-weight: 600;
+    letter-spacing: 0.02em;
     margin-bottom: 3px;
+    font-feature-settings: "tnum";
   }
-
   .agent-turns {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--muted);
-    font-weight: 300;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
   }
 
-  /* ── Projects tiles ── */
+  .agent-project {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    color: var(--muted);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    margin-top: 4px;
+  }
+
+  /* ── Projects (program list) ── */
   .projects-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: 1px;
-    background: var(--border);
-    border: 1px solid var(--border);
-    margin-bottom: 32px;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 0;
+    border-top: 0.5px solid var(--rule-hi);
+    border-left: 0.5px solid var(--rule-hi);
+    margin-bottom: 44px;
   }
 
   .project-tile {
-    background: var(--surface);
-    padding: 16px 18px;
+    padding: 20px 22px;
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    transition: background 0.15s;
+    gap: 14px;
+    border-right: 0.5px solid var(--rule-hi);
+    border-bottom: 0.5px solid var(--rule-hi);
+    transition: background .25s var(--ease);
+    position: relative;
   }
-
-  .project-tile:hover {
-    background: #141414;
-  }
-
-  .project-tile.paused {
-    opacity: 0.55;
-  }
+  .project-tile:hover { background: var(--paper-2); }
+  .project-tile.paused { opacity: 0.5; }
 
   .project-tile-head {
     display: flex;
     justify-content: space-between;
-    align-items: center;
+    align-items: baseline;
+    gap: 10px;
   }
 
   .project-tile-name {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--amber);
-    letter-spacing: 0.02em;
+    font-family: var(--serif);
+    font-variation-settings: "opsz" 14, "wght" 600;
+    font-size: 16px;
+    color: var(--ink);
+    letter-spacing: -0.005em;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    max-width: 140px;
+    max-width: 160px;
   }
 
   .pause-btn {
     background: transparent;
-    border: 1px solid var(--border-hi);
-    color: var(--muted);
-    font-family: var(--font);
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.08em;
+    border: 0.5px solid var(--ink);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
     text-transform: uppercase;
-    padding: 3px 8px;
-    border-radius: 2px;
+    padding: 4px 10px;
     cursor: pointer;
-    transition: all 0.15s;
+    transition: all .2s var(--ease);
   }
-
   .pause-btn:hover {
-    border-color: var(--amber-dim);
-    color: var(--amber);
+    background: var(--ink);
+    color: var(--paper);
   }
-
   .pause-btn.paused {
-    border-color: var(--red);
-    color: var(--red);
+    border-color: var(--vermilion);
+    color: var(--vermilion);
+  }
+  .pause-btn.paused:hover {
+    background: var(--vermilion);
+    color: var(--paper);
   }
 
   .project-tile-stats {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: 6px;
-    font-size: 11px;
+    gap: 10px;
   }
 
   .project-stat {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 4px;
   }
 
   .project-stat-label {
-    font-size: 9px;
+    font-family: var(--mono);
+    font-size: 8.5px;
     color: var(--muted);
-    letter-spacing: 0.1em;
+    letter-spacing: 0.18em;
     text-transform: uppercase;
   }
 
   .project-stat-value {
-    color: var(--text);
-    font-weight: 500;
-    font-size: 13px;
+    font-family: var(--serif);
+    font-variation-settings: "opsz" 14, "wght" 600;
+    font-size: 18px;
+    color: var(--ink);
+    line-height: 1;
+    font-feature-settings: "lnum", "tnum";
   }
 
   /* ── Filter dropdown ── */
   .filter-select {
-    background: var(--surface);
-    border: 1px solid var(--border-hi);
-    color: var(--text);
-    font-family: var(--font);
-    font-size: 11px;
-    padding: 4px 8px;
-    border-radius: 2px;
+    background: transparent;
+    border: none;
+    border-bottom: 0.5px solid var(--ink);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    padding: 3px 18px 3px 4px;
     cursor: pointer;
+    appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, var(--ink) 50%),
+                      linear-gradient(135deg, var(--ink) 50%, transparent 50%);
+    background-position: calc(100% - 10px) center, calc(100% - 6px) center;
+    background-size: 4px 4px, 4px 4px;
+    background-repeat: no-repeat;
   }
-
   .filter-select:focus {
     outline: none;
-    border-color: var(--amber-dim);
+    border-bottom-color: var(--vermilion);
+    color: var(--vermilion);
   }
 
-  /* ── Queue panel ── */
+  /* ── Queue ── */
   .queue-card {
-    background: var(--surface);
-    padding: 12px 18px;
+    padding: 14px 4px;
     display: grid;
-    grid-template-columns: 100px 1fr auto;
-    gap: 14px;
+    grid-template-columns: 130px 1fr auto;
+    gap: 24px;
     align-items: center;
-    border-bottom: 1px solid var(--border);
-    font-size: 12px;
+    border-bottom: 0.5px solid var(--rule);
   }
-
-  .queue-card:last-child {
-    border-bottom: none;
-  }
+  .queue-card:last-child { border-bottom: none; }
 
   .queue-id {
-    color: var(--amber);
-    font-weight: 600;
-    font-size: 12px;
+    font-family: var(--serif);
+    font-variation-settings: "opsz" 14, "wght" 500;
+    font-size: 14px;
+    color: var(--ink);
   }
 
   .queue-title {
+    font-family: var(--serif);
+    font-style: italic;
+    font-variation-settings: "opsz" 14, "wght" 400;
+    font-size: 13px;
     color: var(--muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    max-width: 600px;
+    max-width: 620px;
   }
 
   .queue-reason {
-    font-size: 10px;
+    font-family: var(--mono);
+    font-size: 9px;
     color: var(--muted);
-    letter-spacing: 0.08em;
+    letter-spacing: 0.2em;
     text-transform: uppercase;
-    padding: 2px 8px;
-    border: 1px solid var(--border-hi);
-    border-radius: 2px;
+    padding: 3px 10px;
+    border: 0.5px solid var(--rule-hi);
   }
-
   .queue-reason.paused {
-    color: var(--red);
-    border-color: var(--red);
-  }
-
-  .agent-project {
-    font-size: 10px;
-    color: var(--muted);
-    letter-spacing: 0.05em;
-    margin-top: 2px;
+    color: var(--vermilion);
+    border-color: var(--vermilion);
   }
 
   /* ── Empty state ── */
   .empty {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    padding: 48px 24px;
+    border-top: 0.5px solid var(--rule-hi);
+    border-bottom: 0.5px solid var(--rule-hi);
+    padding: 80px 24px;
     text-align: center;
-    margin-bottom: 32px;
+    margin-bottom: 44px;
   }
 
   .empty-title {
-    font-size: 13px;
-    color: var(--dim);
-    margin-bottom: 6px;
-    font-weight: 300;
-    letter-spacing: 0.06em;
+    font-family: var(--serif);
+    font-style: italic;
+    font-variation-settings: "opsz" 144, "wght" 400;
+    font-size: 28px;
+    color: var(--ink);
+    margin-bottom: 10px;
+    letter-spacing: -0.01em;
   }
 
   .empty-sub {
-    font-size: 11px;
-    color: var(--border-hi);
-    font-weight: 300;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--muted);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
   }
 
-  /* ── Stats bar ── */
+  /* ── Stats bar / coda ── */
   .stats-bar {
     display: flex;
     align-items: center;
-    gap: 24px;
-    padding: 14px 0;
-    border-top: 1px solid var(--border);
-    margin-top: 8px;
+    gap: 32px;
+    padding: 18px 0;
+    border-top: 0.5px solid var(--rule-hi);
+    margin-top: 12px;
   }
 
   .stat-item {
     display: flex;
-    align-items: center;
-    gap: 8px;
+    align-items: baseline;
+    gap: 10px;
   }
 
   .stat-label {
-    font-size: 10px;
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 13px;
     color: var(--muted);
-    font-weight: 300;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
   }
 
   .stat-value {
-    font-size: 12px;
-    color: var(--text);
-    font-weight: 500;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--ink);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    font-feature-settings: "tnum";
   }
 
   .stat-divider {
-    width: 1px;
+    width: 0.5px;
     height: 16px;
-    background: var(--border);
+    background: var(--rule-hi);
   }
 
-  /* ── Progress bar ── */
+  /* ── Progress bar (baton scan) ── */
   .progress-wrap {
     flex: 1;
-    height: 2px;
-    background: var(--border);
+    height: 1px;
+    background: var(--rule-hi);
     overflow: hidden;
-    border-radius: 1px;
+    position: relative;
   }
 
   .progress-bar {
+    position: absolute;
+    top: 0; left: 0;
+    width: 22%;
     height: 100%;
-    background: var(--amber);
-    animation: scan 3s linear infinite;
-    transform-origin: left;
+    background: var(--vermilion);
+    animation: scan 4.2s var(--ease) infinite;
   }
 
   @keyframes scan {
-    0%   { transform: scaleX(0) translateX(0); }
-    50%  { transform: scaleX(1) translateX(0); }
-    100% { transform: scaleX(0) translateX(100%); }
+    0%   { transform: translateX(-110%); }
+    100% { transform: translateX(560%); }
   }
 
   /* ── Footer ── */
   footer {
     display: flex;
     justify-content: space-between;
-    align-items: center;
-    padding: 20px 0 0;
-    border-top: 1px solid var(--border);
-    margin-top: 32px;
+    align-items: baseline;
+    padding: 22px 0 0;
+    border-top: 0.5px solid var(--rule-hi);
+    margin-top: 36px;
+    font-family: var(--serif);
+    font-style: italic;
+    font-variation-settings: "opsz" 14, "wght" 400;
+    font-size: 12px;
+    color: var(--muted);
   }
+  footer .footer-right { font-family: var(--mono); font-style: normal; font-size: 10.5px; letter-spacing: 0.12em; }
 
-  .footer-left {
-    font-size: 11px;
-    color: var(--dim);
-    font-weight: 300;
-  }
-
-  .footer-right {
-    font-size: 11px;
-    color: var(--dim);
-    font-weight: 300;
+  @media (max-width: 820px) {
+    .shell { padding: 0 22px 60px; }
+    header { grid-template-columns: 1fr; gap: 18px; }
+    .header-right { align-items: flex-start; text-align: left; }
+    .metrics { grid-template-columns: repeat(2, 1fr); }
+    .agent-card, .queue-card { grid-template-columns: 90px 1fr; }
+    .agent-meta { grid-column: 1 / -1; text-align: left; }
   }
 </style>
 </head>
@@ -594,40 +692,44 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   <header>
     <div class="logo">
-      <span class="logo-name">STOKOWSKI</span>
-      <span class="logo-tag">Claude Code Orchestrator</span>
+      <div class="logo-name">Concerto<em>.</em></div>
+      <div class="logo-tag">a program of works for Claude Code — after Symphony, op. 0</div>
     </div>
     <div class="header-right">
-      <div id="status-dot" class="status-dot idle"></div>
-      <span id="ts" class="timestamp">—</span>
+      <div class="opus-mark"><b>Op.</b> live · <b>tempo</b> 3s</div>
+      <div class="conductor-row">
+        <span id="status-dot" class="status-dot idle"></span>
+        <span id="ts" class="timestamp">—</span>
+      </div>
     </div>
   </header>
 
   <div class="metrics">
     <div class="metric" id="m-running">
-      <div class="metric-label">Running</div>
+      <div class="metric-label">running</div>
       <div class="metric-value" id="v-running">—</div>
       <div class="metric-sub">active agents</div>
     </div>
     <div class="metric" id="m-retrying">
-      <div class="metric-label">Queued</div>
+      <div class="metric-label">queued</div>
       <div class="metric-value" id="v-retrying">—</div>
-      <div class="metric-sub">retry / waiting</div>
+      <div class="metric-sub">retry · gate</div>
     </div>
     <div class="metric" id="m-tokens">
-      <div class="metric-label">Tokens</div>
+      <div class="metric-label">tokens</div>
       <div class="metric-value" id="v-tokens">—</div>
       <div class="metric-sub" id="v-tokens-sub">total consumed</div>
     </div>
     <div class="metric" id="m-runtime">
-      <div class="metric-label">Runtime</div>
+      <div class="metric-label">runtime</div>
       <div class="metric-value" id="v-runtime">—</div>
-      <div class="metric-sub">cumulative seconds</div>
+      <div class="metric-sub">cumulative</div>
     </div>
   </div>
 
   <div id="projects-section" style="display:none">
     <div class="section-header">
+      <span class="section-numeral">i.</span>
       <span class="section-title">Projects</span>
       <div class="section-line"></div>
       <span class="section-count" id="project-count">0</span>
@@ -636,9 +738,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 
   <div class="section-header">
+    <span class="section-numeral">ii.</span>
     <span class="section-title">Active Agents</span>
     <div class="section-line"></div>
-    <select id="project-filter" class="filter-select" onchange="window.__stokowskiSetFilter(this.value)">
+    <select id="project-filter" class="filter-select" onchange="window.__concertoSetFilter(this.value)">
       <option value="">All projects</option>
     </select>
     <span class="section-count" id="agent-count">0</span>
@@ -648,7 +751,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   <div id="queue-section" style="display:none">
     <div class="section-header">
-      <span class="section-title">Queued (eligible, waiting)</span>
+      <span class="section-numeral">iii.</span>
+      <span class="section-title">Awaiting Cue</span>
       <div class="section-line"></div>
       <span class="section-count" id="queue-count">0</span>
     </div>
@@ -657,23 +761,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   <div class="stats-bar">
     <div class="stat-item">
-      <span class="stat-label">In</span>
+      <span class="stat-label">in</span>
       <span class="stat-value" id="s-in">—</span>
     </div>
     <div class="stat-divider"></div>
     <div class="stat-item">
-      <span class="stat-label">Out</span>
+      <span class="stat-label">out</span>
       <span class="stat-value" id="s-out">—</span>
     </div>
     <div class="stat-divider"></div>
-    <div id="progress-container" style="display:none; flex:1; align-items:center; gap:12px;">
-      <span class="stat-label">Working</span>
+    <div id="progress-container" style="display:none; flex:1; align-items:center; gap:14px;">
+      <span class="stat-label">tempo</span>
       <div class="progress-wrap"><div class="progress-bar"></div></div>
     </div>
   </div>
 
   <footer>
-    <span class="footer-left">Refreshes every 3s</span>
+    <span class="footer-left">— polled every three seconds, in good faith.</span>
     <span class="footer-right" id="footer-gen">—</span>
   </footer>
 
@@ -708,7 +812,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   // Filter state — null means "all projects". Persisted across refreshes.
   let activeFilter = '';
-  window.__stokowskiSetFilter = (val) => { activeFilter = val || ''; refresh(); };
+  window.__concertoSetFilter = (val) => { activeFilter = val || ''; refresh(); };
 
   function projectMatches(item) {
     if (!activeFilter) return true;
@@ -721,7 +825,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       refresh();
     } catch (e) { /* ignore */ }
   }
-  window.__stokowskiTogglePause = togglePause;
+  window.__concertoTogglePause = togglePause;
 
   function renderProjects(data) {
     const projects = data.projects || [];
@@ -757,7 +861,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <div class="project-tile ${p.paused ? 'paused' : ''}">
           <div class="project-tile-head">
             <span class="project-tile-name" title="${esc(p.name)}">${esc(p.name)}</span>
-            <button class="${pauseClass}" onclick="window.__stokowskiTogglePause('${esc(p.name)}')">${pauseLabel}</button>
+            <button class="${pauseClass}" onclick="window.__concertoTogglePause('${esc(p.name)}')">${pauseLabel}</button>
           </div>
           <div class="project-tile-stats">
             <div class="project-stat">
@@ -835,7 +939,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       document.getElementById('agents-container').innerHTML = `
         <div class="empty">
           <div class="empty-title">No active agents</div>
-          <div class="empty-sub">Move a Linear issue to Todo or In Progress to start</div>
+          <div class="empty-sub">Move a GUS work item to the entry status to start</div>
         </div>`;
       return;
     }
@@ -921,7 +1025,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 
 def create_app(orchestrator: "MultiOrchestrator") -> FastAPI:
-    app = FastAPI(title="Stokowski", version="0.1.0")
+    app = FastAPI(title="Concerto", version="0.1.0")
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard():

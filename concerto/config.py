@@ -17,10 +17,21 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class TrackerConfig:
-    kind: str = "linear"
-    endpoint: str = "https://api.linear.app/graphql"
-    api_key: str = ""
-    project_slug: str = ""
+    """GUS tracker connection.
+
+    `target_org`: `sf` CLI org alias (used as `--target-org`). Defaults to "gus".
+    `scrum_team`: scope filter — either an ADM_Scrum_Team__c Id or a team Name.
+    """
+    kind: str = "gus"
+    target_org: str = "gus"
+    scrum_team: str = ""
+    # If true, only fetch work items in the team's current sprint
+    # (ADM_Sprint__c with TODAY between Start_Date__c and End_Date__c).
+    current_sprint_only: bool = False
+    # Filter to work items assigned to a specific user (Assignee__r.Username).
+    # Special value "me" (the default) resolves to the running user via
+    # `sf org display --target-org <alias>`. Empty string disables the filter.
+    assignee: str = "me"
 
 
 @dataclass
@@ -35,7 +46,7 @@ class WorkspaceConfig:
     def resolved_root(self) -> Path:
         if self.root:
             return Path(os.path.expandvars(os.path.expanduser(self.root)))
-        return Path(tempfile.gettempdir()) / "stokowski_workspaces"
+        return Path(tempfile.gettempdir()) / "concerto_workspaces"
 
 
 @dataclass
@@ -79,15 +90,22 @@ class ServerConfig:
 
 
 @dataclass
-class LinearStatesConfig:
-    """Maps logical state names to actual Linear state names."""
-    todo: str = "Todo"
+class GusStatusesConfig:
+    """Maps logical state-machine roles to actual GUS Status__c picklist values."""
+    todo: str = "New"
     active: str = "In Progress"
-    awaiting_ci: str = "Awaiting CI"
-    review: str = "Human Review"
-    gate_approved: str = "Gate Approved"
-    rework: str = "Rework"
-    terminal: list[str] = field(default_factory=lambda: ["Done", "Closed", "Cancelled"])
+    awaiting_ci: str = "Integrate"
+    review: str = "Ready for Review"
+    gate_approved: str = "Fixed"
+    rework: str = "Triaged"
+    terminal: list[str] = field(default_factory=lambda: [
+        "Closed",
+        "Completed",
+        "Duplicate",
+        "Rejected",
+        "Not a bug",
+        "Not Reproducible",
+    ])
 
 
 @dataclass
@@ -102,7 +120,7 @@ class StateConfig:
     name: str = ""
     type: str = "agent"              # "agent", "gate", "terminal"
     prompt: str | None = None        # path to prompt .md file
-    linear_state: str = "active"     # key into LinearStatesConfig
+    gus_status: str = "active"     # key into GusStatusesConfig
     runner: str = "claude"
     model: str | None = None
     max_turns: int | None = None
@@ -121,8 +139,8 @@ class StateConfig:
 class ProjectConfig:
     """A single project's resolved config — flattens global defaults + per-project overrides.
 
-    Each project gets its own Linear tracker, workspace, hooks, prompts,
-    state machine, and (optionally) Linear-state and Claude overrides.
+    Each project gets its own GUS tracker, workspace, hooks, prompts,
+    state machine, and (optionally) GUS-status and Claude overrides.
     Multi-project setups use one ProjectConfig per `projects:` entry;
     legacy single-project setups synthesize one ProjectConfig from the
     top-level fields.
@@ -134,31 +152,20 @@ class ProjectConfig:
     hooks: HooksConfig = field(default_factory=HooksConfig)
     prompts: PromptsConfig = field(default_factory=PromptsConfig)
     states: dict[str, StateConfig] = field(default_factory=dict)
-    linear_states: LinearStatesConfig = field(default_factory=LinearStatesConfig)
+    gus_statuses: GusStatusesConfig = field(default_factory=GusStatusesConfig)
     claude: ClaudeConfig = field(default_factory=ClaudeConfig)
     workflow_dir: Path = field(default_factory=lambda: Path("."))
     # Per-project cap (overrides AgentConfig.max_concurrent_per_project[name]).
     max_concurrent: int | None = None
 
-    def resolved_api_key(self) -> str:
-        key = self.tracker.api_key
-        if not key:
-            return os.environ.get("LINEAR_API_KEY", "")
-        if key.startswith("$"):
-            return os.environ.get(key[1:], "")
-        return key
-
     def agent_env(self) -> dict[str, str]:
         """Build env vars to pass to agent subprocesses for this project."""
         env = dict(os.environ)
-        api_key = self.resolved_api_key()
-        if api_key:
-            env["LINEAR_API_KEY"] = api_key
-        if self.tracker.project_slug:
-            env["LINEAR_PROJECT_SLUG"] = self.tracker.project_slug
-        if self.tracker.endpoint:
-            env["LINEAR_ENDPOINT"] = self.tracker.endpoint
-        env["STOKOWSKI_PROJECT"] = self.name
+        if self.tracker.target_org:
+            env["GUS_TARGET_ORG"] = self.tracker.target_org
+        if self.tracker.scrum_team:
+            env["GUS_SCRUM_TEAM"] = self.tracker.scrum_team
+        env["CONCERTO_PROJECT"] = self.name
         return env
 
     @property
@@ -168,30 +175,30 @@ class ProjectConfig:
                 return name
         return None
 
-    def active_linear_states(self) -> list[str]:
-        ls = self.linear_states
+    def active_gus_statuses(self) -> list[str]:
+        ls = self.gus_statuses
         seen: list[str] = []
         if ls.todo and ls.todo not in seen:
             seen.append(ls.todo)
         for sc in self.states.values():
             if sc.type == "agent":
-                linear_name = _resolve_linear_state_name(sc.linear_state, ls)
-                if linear_name and linear_name not in seen:
-                    seen.append(linear_name)
+                status_name = _resolve_gus_status(sc.gus_status, ls)
+                if status_name and status_name not in seen:
+                    seen.append(status_name)
         return seen
 
-    def gate_linear_states(self) -> list[str]:
-        ls = self.linear_states
+    def gate_gus_statuses(self) -> list[str]:
+        ls = self.gus_statuses
         seen: list[str] = []
         for sc in self.states.values():
             if sc.type == "gate":
-                linear_name = _resolve_linear_state_name(sc.linear_state, ls)
-                if linear_name and linear_name not in seen:
-                    seen.append(linear_name)
+                status_name = _resolve_gus_status(sc.gus_status, ls)
+                if status_name and status_name not in seen:
+                    seen.append(status_name)
         return seen
 
-    def terminal_linear_states(self) -> list[str]:
-        return list(self.linear_states.terminal)
+    def terminal_gus_statuses(self) -> list[str]:
+        return list(self.gus_statuses.terminal)
 
 
 @dataclass
@@ -205,7 +212,7 @@ class ServiceConfig:
     """Top-level config. `projects` is the authoritative project list.
 
     Top-level `tracker`, `workspace`, `hooks`, `prompts`, `states`,
-    `linear_states`, `claude` remain populated for backward compat with
+    `gus_statuses`, `claude` remain populated for backward compat with
     single-project workflows — they mirror `projects[0]` in that case.
     """
     tracker: TrackerConfig = field(default_factory=TrackerConfig)
@@ -215,33 +222,20 @@ class ServiceConfig:
     claude: ClaudeConfig = field(default_factory=ClaudeConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
-    linear_states: LinearStatesConfig = field(default_factory=LinearStatesConfig)
+    gus_statuses: GusStatusesConfig = field(default_factory=GusStatusesConfig)
     prompts: PromptsConfig = field(default_factory=PromptsConfig)
     states: dict[str, StateConfig] = field(default_factory=dict)
     projects: list[ProjectConfig] = field(default_factory=list)
     workflow_dir: Path = field(default_factory=lambda: Path("."))
 
-    def resolved_api_key(self) -> str:
-        # Legacy passthrough — delegates to first project.
-        if self.projects:
-            return self.projects[0].resolved_api_key()
-        key = self.tracker.api_key
-        if not key:
-            return os.environ.get("LINEAR_API_KEY", "")
-        if key.startswith("$"):
-            return os.environ.get(key[1:], "")
-        return key
-
     def agent_env(self) -> dict[str, str]:
         if self.projects:
             return self.projects[0].agent_env()
         env = dict(os.environ)
-        if self.tracker.api_key:
-            env["LINEAR_API_KEY"] = self.resolved_api_key()
-        if self.tracker.project_slug:
-            env["LINEAR_PROJECT_SLUG"] = self.tracker.project_slug
-        if self.tracker.endpoint:
-            env["LINEAR_ENDPOINT"] = self.tracker.endpoint
+        if self.tracker.target_org:
+            env["GUS_TARGET_ORG"] = self.tracker.target_org
+        if self.tracker.scrum_team:
+            env["GUS_SCRUM_TEAM"] = self.tracker.scrum_team
         return env
 
     @property
@@ -253,40 +247,40 @@ class ServiceConfig:
                 return name
         return None
 
-    def active_linear_states(self) -> list[str]:
+    def active_gus_statuses(self) -> list[str]:
         if self.projects:
-            return self.projects[0].active_linear_states()
-        ls = self.linear_states
+            return self.projects[0].active_gus_statuses()
+        ls = self.gus_statuses
         seen: list[str] = []
         if ls.todo and ls.todo not in seen:
             seen.append(ls.todo)
         for sc in self.states.values():
             if sc.type == "agent":
-                linear_name = _resolve_linear_state_name(sc.linear_state, ls)
-                if linear_name and linear_name not in seen:
-                    seen.append(linear_name)
+                status_name = _resolve_gus_status(sc.gus_status, ls)
+                if status_name and status_name not in seen:
+                    seen.append(status_name)
         return seen
 
-    def gate_linear_states(self) -> list[str]:
+    def gate_gus_statuses(self) -> list[str]:
         if self.projects:
-            return self.projects[0].gate_linear_states()
-        ls = self.linear_states
+            return self.projects[0].gate_gus_statuses()
+        ls = self.gus_statuses
         seen: list[str] = []
         for sc in self.states.values():
             if sc.type == "gate":
-                linear_name = _resolve_linear_state_name(sc.linear_state, ls)
-                if linear_name and linear_name not in seen:
-                    seen.append(linear_name)
+                status_name = _resolve_gus_status(sc.gus_status, ls)
+                if status_name and status_name not in seen:
+                    seen.append(status_name)
         return seen
 
-    def terminal_linear_states(self) -> list[str]:
+    def terminal_gus_statuses(self) -> list[str]:
         if self.projects:
-            return self.projects[0].terminal_linear_states()
-        return list(self.linear_states.terminal)
+            return self.projects[0].terminal_gus_statuses()
+        return list(self.gus_statuses.terminal)
 
 
-def _resolve_linear_state_name(key: str, ls: LinearStatesConfig) -> str:
-    """Resolve a logical state key to the actual Linear state name."""
+def _resolve_gus_status(key: str, ls: GusStatusesConfig) -> str:
+    """Resolve a logical state key to the actual GUS status name."""
     mapping: dict[str, str] = {
         "active": ls.active,
         "awaiting_ci": ls.awaiting_ci,
@@ -343,7 +337,7 @@ def _parse_state_config(name: str, raw: dict[str, Any]) -> StateConfig:
         name=name,
         type=str(raw.get("type", "agent")),
         prompt=raw.get("prompt"),
-        linear_state=str(raw.get("linear_state", "active")),
+        gus_status=str(raw.get("gus_status", "active")),
         runner=str(raw.get("runner", "claude")),
         model=raw.get("model"),
         max_turns=raw.get("max_turns"),
@@ -381,10 +375,11 @@ def merge_state_config(
 
 def _parse_tracker(raw: dict[str, Any]) -> TrackerConfig:
     return TrackerConfig(
-        kind=str(raw.get("kind", "linear")),
-        endpoint=str(raw.get("endpoint", "https://api.linear.app/graphql")),
-        api_key=str(raw.get("api_key", "")),
-        project_slug=str(raw.get("project_slug", "")),
+        kind=str(raw.get("kind", "gus")),
+        target_org=str(raw.get("target_org", "gus")),
+        scrum_team=str(raw.get("scrum_team", "")),
+        current_sprint_only=bool(raw.get("current_sprint_only", False)),
+        assignee=str(raw.get("assignee", "me")),
     )
 
 
@@ -417,15 +412,16 @@ def _parse_claude(raw: dict[str, Any]) -> ClaudeConfig:
     )
 
 
-def _parse_linear_states(raw: dict[str, Any]) -> LinearStatesConfig:
-    return LinearStatesConfig(
-        todo=str(raw.get("todo", "Todo")),
-        active=str(raw.get("active", "In Progress")),
-        awaiting_ci=str(raw.get("awaiting_ci", "Awaiting CI")),
-        review=str(raw.get("review", "Human Review")),
-        gate_approved=str(raw.get("gate_approved", "Gate Approved")),
-        rework=str(raw.get("rework", "Rework")),
-        terminal=_coerce_list(raw.get("terminal")) or ["Done", "Closed", "Cancelled"],
+def _parse_gus_statuses(raw: dict[str, Any]) -> GusStatusesConfig:
+    defaults = GusStatusesConfig()
+    return GusStatusesConfig(
+        todo=str(raw.get("todo", defaults.todo)),
+        active=str(raw.get("active", defaults.active)),
+        awaiting_ci=str(raw.get("awaiting_ci", defaults.awaiting_ci)),
+        review=str(raw.get("review", defaults.review)),
+        gate_approved=str(raw.get("gate_approved", defaults.gate_approved)),
+        rework=str(raw.get("rework", defaults.rework)),
+        terminal=_coerce_list(raw.get("terminal")) or list(defaults.terminal),
     )
 
 
@@ -457,7 +453,7 @@ def _build_project(
     """Build a ProjectConfig by merging top-level defaults with per-project overrides."""
     # tracker / workspace / hooks / prompts / states are project-scoped;
     # they may inherit nothing from top-level when `projects:` is used,
-    # so use the project block directly. linear_states / claude inherit
+    # so use the project block directly. gus_statuses / claude inherit
     # from top-level defaults and are overlaid with per-project values.
     tracker_raw = raw.get("tracker", {}) or defaults.get("tracker", {}) or {}
     workspace_raw = raw.get("workspace", {}) or defaults.get("workspace", {}) or {}
@@ -465,7 +461,7 @@ def _build_project(
     prompts_raw = raw.get("prompts", {}) or defaults.get("prompts", {}) or {}
     states_raw = raw.get("states") or defaults.get("states") or {}
 
-    linear_states_raw = _merge_dict(defaults.get("linear_states"), raw.get("linear_states"))
+    gus_statuses_raw = _merge_dict(defaults.get("gus_statuses"), raw.get("gus_statuses"))
     claude_raw = _merge_dict(defaults.get("claude"), raw.get("claude"))
 
     return ProjectConfig(
@@ -476,7 +472,7 @@ def _build_project(
         hooks=_parse_full_hooks(hooks_raw),
         prompts=_parse_prompts(prompts_raw),
         states=_parse_states(states_raw),
-        linear_states=_parse_linear_states(linear_states_raw),
+        gus_statuses=_parse_gus_statuses(gus_statuses_raw),
         claude=_parse_claude(claude_raw),
         workflow_dir=workflow_dir,
         max_concurrent=raw.get("max_concurrent"),
@@ -548,7 +544,7 @@ def parse_workflow_file(path: str | Path) -> WorkflowDefinition:
     if projects_raw is not None:
         # Multi-project mode. Top-level tracker/workspace/hooks/prompts/states
         # are not allowed in this mode (would be ambiguous). Top-level claude
-        # and linear_states ARE allowed — they act as defaults each project
+        # and gus_statuses ARE allowed — they act as defaults each project
         # block can override.
         if not isinstance(projects_raw, list) or not projects_raw:
             raise ValueError("`projects:` must be a non-empty list of project blocks")
@@ -559,7 +555,7 @@ def parse_workflow_file(path: str | Path) -> WorkflowDefinition:
                     f"Move it under each project entry."
                 )
         defaults = {
-            "linear_states": config_raw.get("linear_states") or {},
+            "gus_statuses": config_raw.get("gus_statuses") or {},
             "claude": config_raw.get("claude") or {},
         }
         seen_names: set[str] = set()
@@ -582,7 +578,7 @@ def parse_workflow_file(path: str | Path) -> WorkflowDefinition:
             "hooks": config_raw.get("hooks") or {},
             "prompts": config_raw.get("prompts") or {},
             "states": config_raw.get("states") or {},
-            "linear_states": config_raw.get("linear_states") or {},
+            "gus_statuses": config_raw.get("gus_statuses") or {},
             "claude": config_raw.get("claude") or {},
         }
         name = _legacy_project_name(tracker_raw, path)
@@ -598,7 +594,7 @@ def parse_workflow_file(path: str | Path) -> WorkflowDefinition:
         claude=p0.claude,
         agent=agent,
         server=server,
-        linear_states=p0.linear_states,
+        gus_statuses=p0.gus_statuses,
         prompts=p0.prompts,
         states=p0.states,
         projects=projects,
@@ -612,18 +608,21 @@ def _validate_project(project: ProjectConfig, errors: list[str]) -> None:
     """Validate a single project's state machine and tracker."""
     prefix = f"project '{project.name}'"
 
-    if project.tracker.kind != "linear":
+    if project.tracker.kind != "gus":
         errors.append(f"{prefix}: unsupported tracker kind: {project.tracker.kind}")
-    if not project.resolved_api_key():
-        errors.append(f"{prefix}: missing tracker API key")
-    if not project.tracker.project_slug:
-        errors.append(f"{prefix}: missing tracker.project_slug")
+    if not project.tracker.target_org:
+        errors.append(f"{prefix}: missing tracker.target_org")
+    if not project.tracker.scrum_team and not project.tracker.assignee:
+        errors.append(
+            f"{prefix}: must set tracker.scrum_team or tracker.assignee "
+            f"(at least one scope filter is required)"
+        )
 
     if not project.states:
         errors.append(f"{prefix}: no states defined")
         return
 
-    valid_linear_keys = {"active", "awaiting_ci", "review", "gate_approved", "rework", "terminal"}
+    valid_status_keys = {"active", "awaiting_ci", "review", "gate_approved", "rework", "terminal"}
     has_agent = False
     has_terminal = False
     all_state_names = set(project.states.keys())
@@ -652,10 +651,10 @@ def _validate_project(project: ProjectConfig, errors: list[str]) -> None:
         elif sc.type == "terminal":
             has_terminal = True
 
-        if sc.linear_state not in valid_linear_keys:
+        if sc.gus_status not in valid_status_keys:
             errors.append(
-                f"{prefix} state '{name}': invalid linear_state '{sc.linear_state}' "
-                f"(valid: {', '.join(sorted(valid_linear_keys))})"
+                f"{prefix} state '{name}': invalid gus_status '{sc.gus_status}' "
+                f"(valid: {', '.join(sorted(valid_status_keys))})"
             )
 
         for trigger, target in sc.transitions.items():

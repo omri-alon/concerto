@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 
 
 @dataclass
-class BlockerRef:
-    id: str | None = None
-    identifier: str | None = None
-    state: str | None = None
-
-
-@dataclass
 class Issue:
+    """A GUS work item (ADM_Work__c).
+
+    `id` is the 18-char Salesforce record ID; `identifier` is the GUS
+    work number (e.g. W-12345678). `state` holds Status__c; `branch_name`
+    is Branch__c.
+    """
     id: str
     identifier: str
     title: str
@@ -23,8 +22,6 @@ class Issue:
     state: str = ""
     branch_name: str | None = None
     url: str | None = None
-    labels: list[str] = field(default_factory=list)
-    blocked_by: list[BlockerRef] = field(default_factory=list)
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

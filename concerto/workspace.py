@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .config import HooksConfig
 
-logger = logging.getLogger("stokowski.workspace")
+logger = logging.getLogger("concerto.workspace")
 
 
 def sanitize_key(identifier: str) -> str:

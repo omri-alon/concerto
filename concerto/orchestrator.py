@@ -1,4 +1,4 @@
-"""Main orchestration loop - polls Linear, dispatches agents, manages state."""
+"""Main orchestration loop - polls GUS, dispatches agents, manages state."""
 
 from __future__ import annotations
 
@@ -20,12 +20,12 @@ from .config import (
     ServiceConfig,
     StateConfig,
     WorkflowDefinition,
-    _resolve_linear_state_name,
+    _resolve_gus_status,
     merge_state_config,
     parse_workflow_file,
     validate_config,
 )
-from .linear import LinearClient
+from .gus import GusClient
 from .models import Issue, RetryEntry, RunAttempt
 from .pool import ConcurrencyPool
 from .prompt import assemble_prompt, build_lifecycle_section
@@ -33,7 +33,7 @@ from .runner import run_agent_turn, run_turn
 from .tracking import make_gate_comment, make_state_comment, parse_latest_tracking
 from .workspace import ensure_workspace, remove_workspace
 
-logger = logging.getLogger("stokowski")
+logger = logging.getLogger("concerto")
 
 
 class Orchestrator:
@@ -42,6 +42,7 @@ class Orchestrator:
         workflow_path: str | Path,
         project_name: str | None = None,
         pool: ConcurrencyPool | None = None,
+        only: set[str] | None = None,
     ):
         """Run one project's dispatch loop.
 
@@ -59,6 +60,9 @@ class Orchestrator:
         self.project_name = project_name
         self.project: ProjectConfig | None = None
         self.pool = pool
+        self.only: set[str] | None = (
+            {x.strip() for x in only if x and x.strip()} if only else None
+        ) or None
 
         # Runtime state
         self.running: dict[str, RunAttempt] = {}  # issue_id -> RunAttempt
@@ -73,7 +77,7 @@ class Orchestrator:
         self.total_seconds_running: float = 0
 
         # Internal
-        self._linear: LinearClient | None = None
+        self._gus: GusClient | None = None
         self._tasks: dict[str, asyncio.Task] = {}
         self._retry_timers: dict[str, asyncio.TimerHandle] = {}
         self._child_pids: set[int] = set()  # Track claude subprocess PIDs
@@ -111,7 +115,7 @@ class Orchestrator:
             claude=project.claude,
             agent=full.config.agent,
             server=full.config.server,
-            linear_states=project.linear_states,
+            gus_statuses=project.gus_statuses,
             prompts=project.prompts,
             states=project.states,
             projects=[project],
@@ -186,13 +190,15 @@ class Orchestrator:
         if self.pool is not None:
             self.pool.release(self.project_name or "")
 
-    def _ensure_linear_client(self) -> LinearClient:
-        if self._linear is None:
-            self._linear = LinearClient(
-                endpoint=self.cfg.tracker.endpoint,
-                api_key=self.cfg.resolved_api_key(),
+    def _ensure_gus_client(self) -> GusClient:
+        if self._gus is None:
+            self._gus = GusClient(
+                target_org=self.cfg.tracker.target_org,
+                scrum_team=self.cfg.tracker.scrum_team,
+                current_sprint_only=self.cfg.tracker.current_sprint_only,
+                assignee=self.cfg.tracker.assignee,
             )
-        return self._linear
+        return self._gus
 
     async def start(self):
         """Start the orchestration loop."""
@@ -205,7 +211,7 @@ class Orchestrator:
         logger.info(
             f"Starting orchestrator "
             f"project={self.project_name} "
-            f"slug={self.cfg.tracker.project_slug} "
+            f"scrum_team={self.cfg.tracker.scrum_team} "
             f"max_agents={self.cfg.agent.max_concurrent_agents} "
             f"poll_ms={self.cfg.polling.interval_ms}"
         )
@@ -216,9 +222,9 @@ class Orchestrator:
         # Startup terminal cleanup
         await self._startup_cleanup()
 
-        # Rebuild gates from Linear so the dashboard is accurate immediately
-        # after restart, not only after Stokowski dispatches in-flight tickets
-        await self._rebuild_gates_from_linear()
+        # Rebuild gates from GUS so the dashboard is accurate immediately
+        # after restart, not only after Concerto dispatches in-flight tickets
+        await self._rebuild_gates_from_gus()
 
         # Main poll loop
         while self._running:
@@ -262,19 +268,21 @@ class Orchestrator:
             await asyncio.sleep(0.5)
         self._tasks.clear()
 
-        if self._linear:
-            await self._linear.close()
+        if self._gus:
+            await self._gus.close()
 
     async def _startup_cleanup(self):
         """Remove workspaces for issues already in terminal states."""
         try:
-            client = self._ensure_linear_client()
+            client = self._ensure_gus_client()
             terminal = await client.fetch_issues_by_states(
-                self.cfg.tracker.project_slug,
-                self.cfg.terminal_linear_states(),
+                self.cfg.tracker.scrum_team,
+                self.cfg.terminal_gus_statuses(),
             )
             ws_root = self.cfg.workspace.resolved_root()
             for issue in terminal:
+                if not self._in_filter(issue):
+                    continue
                 await remove_workspace(ws_root, issue.identifier, self.cfg.hooks)
             if terminal:
                 logger.info(f"Cleaned {len(terminal)} terminal workspaces")
@@ -291,8 +299,8 @@ class Orchestrator:
             run = self._issue_state_runs.get(issue.id, 1)
             return state_name, run
 
-        # Fetch comments from Linear and parse latest tracking
-        client = self._ensure_linear_client()
+        # Fetch comments from GUS and parse latest tracking
+        client = self._ensure_gus_client()
         comments = await client.fetch_comments(issue.id)
         tracking = parse_latest_tracking(comments)
 
@@ -370,7 +378,7 @@ class Orchestrator:
         prompt = state_cfg.prompt if state_cfg else ""
         run = self._issue_state_runs.get(issue.id, 1)
 
-        client = self._ensure_linear_client()
+        client = self._ensure_gus_client()
 
         comment = make_gate_comment(
             state=state_name,
@@ -380,21 +388,21 @@ class Orchestrator:
         )
         await client.post_comment(issue.id, comment)
 
-        # Use the gate's own linear_state (per workflow.yaml), not a global one.
-        # Previously this hardcoded `linear_states.review`, which forced every
+        # Use the gate's own gus_status (per workflow.yaml), not a global one.
+        # Previously this hardcoded `gus_statuses.review`, which forced every
         # gate entry — including `await_ci_and_review` — straight to "Human
         # Review", bypassing the CI+reviewer poller entirely.
-        linear_key = state_cfg.linear_state if state_cfg else "review"
-        target_linear_state = _resolve_linear_state_name(linear_key, self.cfg.linear_states)
-        moved = await client.update_issue_state(issue.id, target_linear_state)
+        status_key = state_cfg.gus_status if state_cfg else "review"
+        target_status = _resolve_gus_status(status_key, self.cfg.gus_statuses)
+        moved = await client.update_issue_state(issue.id, target_status)
         if not moved:
             logger.error(
-                f"Failed to move {issue.identifier} to gate linear state "
-                f"'{target_linear_state}' (gate={state_name}) "
+                f"Failed to move {issue.identifier} to gate status "
+                f"'{target_status}' (gate={state_name}) "
                 f"— issue will remain claimed to prevent re-dispatch loop"
             )
             # Keep claimed so the issue doesn't get re-dispatched while
-            # still in the active Linear state. Track the gate so
+            # still in the active GUS status. Track the gate so
             # _handle_gate_responses can pick it up if the state is
             # changed manually.
             self._pending_gates[issue.id] = state_name
@@ -438,7 +446,7 @@ class Orchestrator:
         Handles target types:
         - terminal → move to Done, clean workspace, release tracking
         - gate → enter gate
-        - agent → post state comment, ensure active Linear state, schedule retry
+        - agent → post state comment, ensure active GUS status, schedule retry
         """
         current_state_name = self._issue_current_state.get(issue.id)
         if not current_state_name:
@@ -467,9 +475,9 @@ class Orchestrator:
 
         if target_cfg.type == "terminal":
             # Move issue to terminal state
-            terminal_state = self.cfg.terminal_linear_states()[0] if self.cfg.terminal_linear_states() else "Done"
+            terminal_state = self.cfg.terminal_gus_statuses()[0] if self.cfg.terminal_gus_statuses() else "Done"
             try:
-                client = self._ensure_linear_client()
+                client = self._ensure_gus_client()
                 moved = await client.update_issue_state(issue.id, terminal_state)
                 if moved:
                     logger.info(f"Moved {issue.identifier} to terminal state '{terminal_state}'")
@@ -496,17 +504,17 @@ class Orchestrator:
             await self._enter_gate(issue, target_name)
 
         else:
-            # Agent state — post state comment, ensure active Linear state, schedule retry
+            # Agent state — post state comment, ensure active GUS status, schedule retry
             self._issue_current_state[issue.id] = target_name
-            client = self._ensure_linear_client()
+            client = self._ensure_gus_client()
             comment = make_state_comment(
                 state=target_name,
                 run=run,
             )
             await client.post_comment(issue.id, comment)
 
-            # Ensure issue is in active Linear state
-            active_state = self.cfg.linear_states.active
+            # Ensure issue is in active GUS status
+            active_state = self.cfg.gus_statuses.active
             moved = await client.update_issue_state(issue.id, active_state)
             if not moved:
                 logger.warning(f"Failed to move {issue.identifier} to active state '{active_state}'")
@@ -520,19 +528,21 @@ class Orchestrator:
         if not has_gates:
             return
 
-        client = self._ensure_linear_client()
+        client = self._ensure_gus_client()
 
         # Fetch gate-approved issues
         try:
             approved_issues = await client.fetch_issues_by_states(
-                self.cfg.tracker.project_slug,
-                [self.cfg.linear_states.gate_approved],
+                self.cfg.tracker.scrum_team,
+                [self.cfg.gus_statuses.gate_approved],
             )
         except Exception as e:
             logger.warning(f"Failed to fetch gate-approved issues: {e}")
             approved_issues = []
 
         for issue in approved_issues:
+            if not self._in_filter(issue):
+                continue
             if issue.id in self.running or issue.id in self.claimed:
                 continue
 
@@ -553,12 +563,12 @@ class Orchestrator:
                 # Set current state to the gate so _transition can read FROM it,
                 # then route through _transition. This dispatches the approve
                 # transition through the existing target-type logic, which
-                # correctly handles terminal targets (move to terminal Linear
+                # correctly handles terminal targets (move to terminal GUS
                 # state + clean up workspace), gate targets (enter the new
                 # gate), and agent targets (post state comment + move to active
-                # Linear state + schedule retry).
+                # GUS status + schedule retry).
                 #
-                # Previously this branch unconditionally moved the Linear ticket
+                # Previously this branch unconditionally moved the GUS work item
                 # to `active` regardless of the approve target's type, which left
                 # tickets stuck in `In Progress` forever for any workflow whose
                 # gate transitions directly to a terminal state.
@@ -570,14 +580,16 @@ class Orchestrator:
         # Fetch rework issues
         try:
             rework_issues = await client.fetch_issues_by_states(
-                self.cfg.tracker.project_slug,
-                [self.cfg.linear_states.rework],
+                self.cfg.tracker.scrum_team,
+                [self.cfg.gus_statuses.rework],
             )
         except Exception as e:
             logger.warning(f"Failed to fetch rework issues: {e}")
             rework_issues = []
 
         for issue in rework_issues:
+            if not self._in_filter(issue):
+                continue
             if issue.id in self.running or issue.id in self.claimed:
                 continue
 
@@ -621,7 +633,7 @@ class Orchestrator:
 
                 self._issue_current_state[issue.id] = rework_to
 
-                active_state = self.cfg.linear_states.active
+                active_state = self.cfg.gus_statuses.active
                 moved = await client.update_issue_state(issue.id, active_state)
                 if moved:
                     issue.state = active_state
@@ -638,7 +650,7 @@ class Orchestrator:
 
         Runs each tick so stale Done/Canceled/Duplicate entries are removed
         within one poll cycle without requiring a manual POST /api/v1/refresh.
-        This fixes the failure mode where tickets advanced to Done in Linear
+        This fixes the failure mode where tickets advanced to Done in GUS
         remain in the gates list indefinitely.
         """
         if not self._pending_gates:
@@ -646,13 +658,13 @@ class Orchestrator:
 
         gate_ids = list(self._pending_gates.keys())
         try:
-            client = self._ensure_linear_client()
+            client = self._ensure_gus_client()
             states = await client.fetch_issue_states_by_ids(gate_ids)
         except Exception as e:
             logger.warning(f"Gate eviction state fetch failed: {e}")
             return
 
-        terminal_lower = {s.strip().lower() for s in self.cfg.terminal_linear_states()}
+        terminal_lower = {s.strip().lower() for s in self.cfg.terminal_gus_statuses()}
 
         for issue_id in gate_ids:
             current_state = states.get(issue_id)
@@ -672,42 +684,44 @@ class Orchestrator:
                     f"(moved to terminal: {current_state})"
                 )
 
-    async def _rebuild_gates_from_linear(self):
-        """Rebuild _pending_gates from Linear state on startup.
+    async def _rebuild_gates_from_gus(self):
+        """Rebuild _pending_gates from GUS status on startup.
 
-        Fetches all tickets currently in gate-flagged Linear states (Awaiting CI,
+        Fetches all tickets currently in gate-flagged GUS statuses (Awaiting CI,
         Human Review, Rework) and reconstructs their gate tracking by reading the
-        most recent stokowski tracking comment on each issue.  This ensures the
+        most recent concerto tracking comment on each issue.  This ensures the
         dashboard is accurate immediately after a restart, not only after
-        Stokowski itself dispatches them in the new process lifetime.
+        Concerto itself dispatches them in the new process lifetime.
 
         Fallback: if no tracking comment is found, derives the gate state from
-        the ticket's current Linear state by matching against configured gate
-        states' linear_state keys.  This handles tickets that were moved to a
-        gate-flagged state by an agent (via Linear MCP) before Stokowski's own
+        the ticket's current GUS status by matching against configured gate
+        states' gus_status keys.  This handles tickets that were moved to a
+        gate-flagged state by an agent (via GUS) before Concerto's own
         gate-entry comment was posted.
         """
-        gate_states = self.cfg.gate_linear_states()
+        gate_states = self.cfg.gate_gus_statuses()
         if not gate_states:
             return
 
         # Also include Rework — reworked tickets still hold pending gate context
         all_gate_states = list(gate_states)
-        rework_state = self.cfg.linear_states.rework
+        rework_state = self.cfg.gus_statuses.rework
         if rework_state and rework_state not in all_gate_states:
             all_gate_states.append(rework_state)
 
         try:
-            client = self._ensure_linear_client()
+            client = self._ensure_gus_client()
             issues = await client.fetch_issues_by_states(
-                self.cfg.tracker.project_slug, all_gate_states
+                self.cfg.tracker.scrum_team, all_gate_states
             )
         except Exception as e:
-            logger.warning(f"Gate rebuild from Linear failed: {e}")
+            logger.warning(f"Gate rebuild from GUS failed: {e}")
             return
 
         rebuilt = 0
         for issue in issues:
+            if not self._in_filter(issue):
+                continue
             if issue.id in self._pending_gates:
                 continue  # Already tracked
 
@@ -734,16 +748,16 @@ class Orchestrator:
                 if tracked_name in self.cfg.states:
                     gate_state = tracked_name
 
-            # Fallback: derive gate state from the current Linear state name by
-            # matching against configured gate states' linear_state keys
+            # Fallback: derive gate state from the current GUS status name by
+            # matching against configured gate states' gus_status keys
             if not gate_state:
-                current_linear = issue.state.strip().lower()
+                current_status = issue.state.strip().lower()
                 for gname, gcfg in self.cfg.states.items():
                     if gcfg.type == "gate":
-                        gate_linear = _resolve_linear_state_name(
-                            gcfg.linear_state, self.cfg.linear_states
+                        gate_status_val = _resolve_gus_status(
+                            gcfg.gus_status, self.cfg.gus_statuses
                         )
-                        if gate_linear.strip().lower() == current_linear:
+                        if gate_status_val.strip().lower() == current_status:
                             gate_state = gname
                             run = 1
                             break
@@ -755,11 +769,11 @@ class Orchestrator:
                 rebuilt += 1
                 logger.info(
                     f"Gate rebuilt issue={issue.identifier} "
-                    f"gate={gate_state} run={run} (recovered from Linear)"
+                    f"gate={gate_state} run={run} (recovered from GUS)"
                 )
 
         if rebuilt:
-            logger.info(f"Gate rebuild complete: {rebuilt} gate(s) recovered from Linear")
+            logger.info(f"Gate rebuild complete: {rebuilt} gate(s) recovered from GUS")
 
     async def _tick(self):
         """Single poll tick: reconcile, validate, fetch, dispatch."""
@@ -782,10 +796,10 @@ class Orchestrator:
 
         # Part 3: Fetch candidates
         try:
-            client = self._ensure_linear_client()
+            client = self._ensure_gus_client()
             candidates = await client.fetch_candidate_issues(
-                self.cfg.tracker.project_slug,
-                self.cfg.active_linear_states(),
+                self.cfg.tracker.scrum_team,
+                self.cfg.active_gus_statuses(),
             )
         except Exception as e:
             logger.error(f"Failed to fetch candidates: {e}")
@@ -867,14 +881,22 @@ class Orchestrator:
 
             self._dispatch(issue)
 
+    def _in_filter(self, issue: Issue) -> bool:
+        """When `--only` is set, restrict orchestration to those identifiers."""
+        if self.only is None:
+            return True
+        return issue.identifier in self.only
+
     def _is_eligible(self, issue: Issue) -> bool:
         """Check if an issue is eligible for dispatch."""
         if not issue.id or not issue.identifier or not issue.title or not issue.state:
             return False
+        if not self._in_filter(issue):
+            return False
 
         state_lower = issue.state.strip().lower()
-        active_lower = [s.strip().lower() for s in self.cfg.active_linear_states()]
-        terminal_lower = [s.strip().lower() for s in self.cfg.terminal_linear_states()]
+        active_lower = [s.strip().lower() for s in self.cfg.active_gus_statuses()]
+        terminal_lower = [s.strip().lower() for s in self.cfg.terminal_gus_statuses()]
 
         if state_lower not in active_lower:
             return False
@@ -884,12 +906,6 @@ class Orchestrator:
             return False
         if issue.id in self.claimed:
             return False
-
-        # Blocker check for Todo
-        if state_lower == "todo":
-            for blocker in issue.blocked_by:
-                if blocker.state and blocker.state.strip().lower() not in terminal_lower:
-                    return False
 
         return True
 
@@ -974,11 +990,11 @@ class Orchestrator:
             attempt.workspace_path = str(ws.path)
 
             # Move issue from Todo to In Progress if needed
-            todo_state = self.cfg.linear_states.todo
+            todo_state = self.cfg.gus_statuses.todo
             if todo_state and issue.state.strip().lower() == todo_state.strip().lower():
                 try:
-                    client = self._ensure_linear_client()
-                    active_state = self.cfg.linear_states.active
+                    client = self._ensure_gus_client()
+                    active_state = self.cfg.gus_statuses.active
                     moved = await client.update_issue_state(issue.id, active_state)
                     if moved:
                         issue.state = active_state
@@ -988,7 +1004,7 @@ class Orchestrator:
                     else:
                         logger.warning(
                             f"Failed to move {issue.identifier} from '{todo_state}' to '{active_state}' "
-                            f"— Linear API returned failure"
+                            f"— GUS API returned failure"
                         )
                 except Exception as e:
                     logger.warning(f"Failed to move {issue.identifier} to active: {e}")
@@ -997,7 +1013,7 @@ class Orchestrator:
             if state_name:
                 run = self._issue_state_runs.get(issue.id, 1)
                 if run == 1 and (attempt.attempt is None or attempt.attempt == 0):
-                    client = self._ensure_linear_client()
+                    client = self._ensure_gus_client()
                     comment = make_state_comment(
                         state=state_name,
                         run=run,
@@ -1049,12 +1065,12 @@ class Orchestrator:
                     if turn > 0:
                         current_state = issue.state
                         try:
-                            client = self._ensure_linear_client()
+                            client = self._ensure_gus_client()
                             states = await client.fetch_issue_states_by_ids([issue.id])
                             current_state = states.get(issue.id, issue.state)
                             state_lower = current_state.strip().lower()
                             active_lower = [
-                                s.strip().lower() for s in self.cfg.active_linear_states()
+                                s.strip().lower() for s in self.cfg.active_gus_statuses()
                             ]
                             if state_lower not in active_lower:
                                 logger.info(
@@ -1112,7 +1128,7 @@ class Orchestrator:
             # Fetch comments for lifecycle context
             comments: list[dict] | None = None
             try:
-                client = self._ensure_linear_client()
+                client = self._ensure_gus_client()
                 comments = await client.fetch_comments(issue.id)
             except Exception as e:
                 logger.warning(f"Failed to fetch comments for prompt: {e}")
@@ -1163,7 +1179,7 @@ class Orchestrator:
         template_str = self.workflow.prompt_template
 
         if not template_str:
-            return f"You are working on an issue from Linear: {issue.identifier} - {issue.title}"
+            return f"You are working on an issue from GUS: {issue.identifier} - {issue.title}"
 
         last_completed = self._last_completed_at.get(issue.id)
         last_run_at = last_completed.isoformat() if last_completed else ""
@@ -1180,11 +1196,6 @@ class Orchestrator:
                     "state": issue.state,
                     "branch_name": issue.branch_name,
                     "url": issue.url,
-                    "labels": issue.labels,
-                    "blocked_by": [
-                        {"id": b.id, "identifier": b.identifier, "state": b.state}
-                        for b in issue.blocked_by
-                    ],
                     "created_at": str(issue.created_at) if issue.created_at else "",
                     "updated_at": str(issue.updated_at) if issue.updated_at else "",
                 },
@@ -1293,10 +1304,10 @@ class Orchestrator:
 
         # Fetch fresh candidates to check eligibility
         try:
-            client = self._ensure_linear_client()
+            client = self._ensure_gus_client()
             candidates = await client.fetch_candidate_issues(
-                self.cfg.tracker.project_slug,
-                self.cfg.active_linear_states(),
+                self.cfg.tracker.scrum_team,
+                self.cfg.active_gus_statuses(),
             )
         except Exception as e:
             logger.warning(f"Retry candidate fetch failed: {e}")
@@ -1337,26 +1348,26 @@ class Orchestrator:
         self._dispatch(issue, attempt_num=entry.attempt)
 
     async def _reconcile(self):
-        """Reconcile running issues against current Linear state."""
+        """Reconcile running issues against current GUS status."""
         if not self.running:
             return
 
         running_ids = list(self.running.keys())
 
         try:
-            client = self._ensure_linear_client()
+            client = self._ensure_gus_client()
             states = await client.fetch_issue_states_by_ids(running_ids)
         except Exception as e:
             logger.warning(f"Reconciliation state fetch failed: {e}")
             return
 
         terminal_lower = [
-            s.strip().lower() for s in self.cfg.terminal_linear_states()
+            s.strip().lower() for s in self.cfg.terminal_gus_statuses()
         ]
         active_lower = [
-            s.strip().lower() for s in self.cfg.active_linear_states()
+            s.strip().lower() for s in self.cfg.active_gus_statuses()
         ]
-        review_lower = self.cfg.linear_states.review.strip().lower()
+        review_lower = self.cfg.gus_statuses.review.strip().lower()
 
         for issue_id in running_ids:
             current_state = states.get(issue_id)
@@ -1504,12 +1515,13 @@ class MultiOrchestrator:
     keyboard handler context, and cooperative startup/shutdown.
     """
 
-    def __init__(self, workflow_path: str | Path):
+    def __init__(self, workflow_path: str | Path, only: set[str] | None = None):
         self.workflow_path = Path(workflow_path)
         self.pool = ConcurrencyPool()
         self.orchestrators: dict[str, Orchestrator] = {}  # project_name -> Orchestrator
         self._tasks: list[asyncio.Task] = []
         self._stop_event: asyncio.Event | None = None
+        self.only = only
 
     # ── Config wiring ──────────────────────────────────────────────────────
 
@@ -1562,6 +1574,7 @@ class MultiOrchestrator:
                 workflow_path=self.workflow_path,
                 project_name=project.name,
                 pool=self.pool,
+                only=self.only,
             )
             self.orchestrators[project.name] = orch
 

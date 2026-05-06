@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-logger = logging.getLogger("stokowski.pool")
+logger = logging.getLogger("concerto.pool")
 
 
 @dataclass

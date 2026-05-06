@@ -21,11 +21,13 @@ the implementer missed — not to rubber-stamp the PR.
 
 ## Review process
 
-1. Read the full diff:
+1. Read the full diff against the repo's default branch (`master`):
    ```
-   git diff main...HEAD
+   git fetch --depth 50 origin master
+   git diff origin/master...HEAD
    ```
-2. Read the issue description and any acceptance criteria.
+2. Read the GUS work item description and acceptance criteria, and the most
+   recent Chatter feed posts (see global instructions — query `FeedItem`).
 3. For each changed file, read the surrounding code (not just the diff) to
    understand the full context.
 4. Evaluate:
@@ -35,10 +37,12 @@ the implementer missed — not to rubber-stamp the PR.
    - **Tests** — Adequate coverage?  Do tests actually test the right thing?
    - **Performance** — Any obvious regressions or inefficiencies?
 5. Run the quality suite yourself to confirm everything passes:
-   - Type checking
-   - Linting
-   - Tests
-6. Post your review as a Linear comment titled `## Code Review`:
+   - Build / type-check
+   - Lint, if defined
+   - All tests
+6. Post your review as a `FeedItem` titled `## Code Review` on work item
+   `{{ issue.id }}` (see global instructions for the REST API recipe — real
+   newlines required, do not use `sf data create record --values`):
    - List issues found (critical, major, minor)
    - Note anything that looks good
    - Give an overall assessment: approve, request changes, or flag concerns
@@ -47,14 +51,15 @@ the implementer missed — not to rubber-stamp the PR.
 
 If this is a rework run (the review stage is being re-run after changes):
 
-1. Read your prior review from the Linear comments.
+1. Read your prior `## Code Review` Chatter feed post.
 2. Read the new commits since your last review:
    ```
-   git log --oneline main..HEAD
+   git log --oneline origin/master..HEAD
    ```
 3. Verify that previously raised issues have been addressed.
 4. Check for any new issues introduced by the rework.
-5. Post an updated `## Code Review` comment with your revised assessment.
+5. Post an updated `## Code Review (rework N)` `FeedItem` with your revised
+   assessment.
 
 ## Guidelines
 

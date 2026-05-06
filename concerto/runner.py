@@ -12,7 +12,7 @@ from typing import Any, Callable
 from .config import ClaudeConfig, HooksConfig
 from .models import Issue, RunAttempt
 
-logger = logging.getLogger("stokowski.runner")
+logger = logging.getLogger("concerto.runner")
 
 # Callback type for events from the runner to the orchestrator
 EventCallback = Callable[[str, str, dict[str, Any]], None]
@@ -51,7 +51,7 @@ def build_claude_args(
     # System prompt - always include headless context, plus any user additions
     if not session_id:
         headless_context = (
-            "You are running in headless/unattended mode via Stokowski orchestrator. "
+            "You are running in headless/unattended mode via Concerto orchestrator. "
             "Do NOT use interactive skills, slash commands, or the Skill tool. "
             "Do NOT invoke brainstorming, plan mode, or any interactive workflow. "
             "Work autonomously and directly on the task."

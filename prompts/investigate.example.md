@@ -17,11 +17,12 @@ No description provided.
 ## Objective
 
 Understand the problem thoroughly before any code is written.  Your output is
-an investigation summary posted as a Linear comment — not code changes.
+an investigation summary posted to the GUS Chatter feed — not code changes.
 
 ## First run
 
-1. Read the issue description and any existing Linear comments.
+1. Read the issue description and any existing Chatter feed posts on this
+   work item (see global instructions — query `FeedItem` by `ParentId`).
 2. Identify the relevant source files — read them, understand the architecture.
 3. If the issue is a bug: reproduce it first (run the failing test or repro steps).
 4. If the issue is a feature: map out which files/modules need changes.
@@ -30,19 +31,22 @@ an investigation summary posted as a Linear comment — not code changes.
    - **Affected files** with brief explanation of needed changes
    - **Risks or open questions**
    - **Proposed approach** (high-level, 3-5 bullet points)
-6. Post the summary as a Linear comment titled `## Investigation`.
-7. Update the workpad with investigation status.
+6. Post the summary as a new `FeedItem` titled `## Investigation` on work item
+   `{{ issue.id }}` using the REST API recipe in the global instructions.
+   Real newlines and unicode required — do NOT use `sf data create record
+   --values "..."` for the body.
+7. Post a `## Workpad` FeedItem with the current investigation status.
 
 ## Rework run
 
 If this is a rework run (the workspace already has investigation content):
 
-1. Read the review feedback from Linear comments.
-2. Read your prior investigation summary.
+1. Read the review feedback from the Chatter feed on this work item.
+2. Read your prior `## Investigation` post.
 3. Address the specific feedback — expand analysis, correct mistakes, or
    investigate additional areas as requested.
-4. Update the `## Investigation` comment with revised findings.
-5. Append a rework note to the workpad.
+4. Post a new `## Investigation (rework N)` FeedItem with the revised findings.
+5. Post a `## Workpad (rework N)` FeedItem noting what changed.
 
 ## Do NOT
 

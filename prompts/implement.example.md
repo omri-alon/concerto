@@ -16,58 +16,78 @@ No description provided.
 
 ## Objective
 
-Implement the solution, create a PR, and ensure it passes all quality checks.
+Implement the solution, create a PR on Salesforce-internal GitHub
+(`git.soma.salesforce.com`), and ensure it passes all quality checks.
 
 ## First run
 
-1. Read the investigation summary from the Linear comments.
+1. Read the `## Investigation` summary from the GUS Chatter feed (see global
+   instructions — query `FeedItem` by `ParentId`).
 2. Read the relevant source files identified in the investigation.
-3. Create a feature branch from `main`:
+3. Create a feature branch from `master` (this repo's default branch is
+   `master`, not `main`):
    ```
-   git checkout -b {{ issue.identifier | lower }}-<short-description>
+   git checkout -b {{ issue.identifier | lower }}-<short-description> origin/master
    ```
 4. Implement the changes with clean, logical commits.
 5. Run the full quality suite:
-   - Type checking
-   - Linting
-   - All tests
+   - Build / type-check (`mvn install` or equivalent)
+   - All tests (`mvn test` or equivalent)
+   - Lint, if defined
 6. Fix any failures before proceeding.
-7. Push the branch and create a PR:
+7. Push the branch and create a PR on Salesforce-internal GitHub:
    ```
+   export GH_HOST=git.soma.salesforce.com
    git push -u origin HEAD
-   gh pr create --title "{{ issue.identifier }}: <concise title>" --body "<description>"
+   cat > /tmp/pr-body.md <<'EOF'
+   <PR description: what changed, why, how it was tested, link back to GUS>
+   EOF
+   gh pr create --title "@{{ issue.identifier }} <concise title>" \
+                --body-file /tmp/pr-body.md \
+                --base master
    ```
-8. Link the PR to the Linear issue.
-9. Update the workpad with: what was done, what was tested, any known limitations.
+   The title MUST start with `@{{ issue.identifier }}` per the project's CLAUDE.md.
+8. Post a `FeedItem` on work item `{{ issue.id }}` linking the PR (URL from
+   `gh pr view <number> --json url -q .url`) so reviewers can find it.
+9. Post a `## Workpad` FeedItem with: what was done, what was tested, any
+   known limitations.
 
 ## Rework run
 
 If this is a rework run (a branch and PR already exist):
 
-1. Find the existing PR:
+1. Make sure `GH_HOST` is set:
+   ```
+   export GH_HOST=git.soma.salesforce.com
+   ```
+2. Find the existing PR:
    ```
    gh pr list --head <branch-name>
    ```
-2. Read review comments and requested changes:
+3. Read review comments and requested changes — both on GitHub:
    ```
    gh pr view <number> --comments
    ```
-3. Address each piece of feedback specifically.
-4. Run the full quality suite again.
-5. Push new commits to the existing branch (do not force-push).
-6. Post a comment on the GitHub PR summarising the rework:
+   and on the GUS work item Chatter feed (most recent `FeedItem` records that
+   are not Concerto tracking markers).
+4. Address each piece of feedback specifically.
+5. Run the full quality suite again.
+6. Push new commits to the existing branch (do not force-push).
+7. Post a comment on the GitHub PR summarising the rework:
    - Which review comments were addressed
    - What was modified
    - Any decisions or trade-offs
-7. Append a rework section to the Linear workpad.
+8. Post a `## Workpad (rework N)` FeedItem describing what changed.
 
 ## Quality bar
 
 Before finishing, verify:
 
 - [ ] All tests pass
-- [ ] No type errors
+- [ ] Build / type-check is clean
 - [ ] No lint errors
-- [ ] All acceptance criteria from the ticket description met
-- [ ] PR created (or updated) and linked to Linear issue
-- [ ] Workpad updated with completion summary
+- [ ] All acceptance criteria from the GUS work item description met
+- [ ] PR created (or updated) on `git.soma.salesforce.com` with the
+      `@{{ issue.identifier }}` prefix in the title
+- [ ] PR URL posted as a Chatter `FeedItem` on this work item
+- [ ] `## Workpad` Chatter `FeedItem` posted with completion summary
