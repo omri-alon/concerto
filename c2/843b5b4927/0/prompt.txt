@@ -1,0 +1,6 @@
+do we have install.sh for this project ? if not please write one , i want it to be shareable
+
+---
+
+(.venv) oalon@oalon-ltm3w7n concerto % curl -fsSL https://raw.githubusercontent.com/omri-alon/concerto/main/install.sh | bash
+curl: (56) The requested URL returned error: 404
